@@ -1,6 +1,8 @@
 export interface AppConfig {
+  provider: 'custom' | 'opencode-zen';
   apiUrl: string;
   apiKey: string;
+  opencodeZenApiKey: string;
   model: string;
   systemPrompt: string;
   workspacePath: string;
@@ -42,5 +44,7 @@ export type SSEEvent =
   | { type: 'tool_start'; id: string; name: string; args: any }
   | { type: 'tool_output'; id: string; name: string; output: string } // Added for frontend logic consistency
   | { type: 'tool_end'; id: string; name: string; output: string }
+  | { type: 'metadata'; startIndex?: number; chatId?: number }
   | { type: 'done'; chatId?: number }
   | { type: 'error'; content: string };
+

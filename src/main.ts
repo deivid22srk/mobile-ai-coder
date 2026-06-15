@@ -35,14 +35,24 @@ export const modelPickerList = document.getElementById('model-picker-list') as H
 export const modelPickerCount = document.getElementById('model-picker-count') as HTMLSpanElement;
 export const modelPickerActive = document.getElementById('model-picker-active') as HTMLSpanElement;
 
+export const btnPickerProviderCustom = document.getElementById('btn-picker-provider-custom') as HTMLButtonElement;
+export const btnPickerProviderZen = document.getElementById('btn-picker-provider-zen') as HTMLButtonElement;
+
 // Configuration fields
+export const cfgProvider = document.getElementById('cfg-provider') as HTMLSelectElement;
 export const cfgApiUrl = document.getElementById('cfg-api-url') as HTMLInputElement;
 export const cfgApiKey = document.getElementById('cfg-api-key') as HTMLInputElement;
+export const cfgOpencodeZenApiKey = document.getElementById('cfg-opencode-zen-api-key') as HTMLInputElement;
 export const cfgModel = document.getElementById('cfg-model') as HTMLInputElement;
 export const cfgWorkspace = document.getElementById('cfg-workspace') as HTMLInputElement;
 export const cfgSystemPrompt = document.getElementById('cfg-system-prompt') as HTMLTextAreaElement;
 export const cfgGithubToken = document.getElementById('cfg-github-token') as HTMLInputElement;
 export const btnSettingsSave = document.getElementById('btn-settings-save') as HTMLButtonElement;
+
+// Provider Form Groups
+export const formGroupApiUrl = document.getElementById('form-group-api-url') as HTMLDivElement;
+export const formGroupApiKey = document.getElementById('form-group-api-key') as HTMLDivElement;
+export const formGroupZenKey = document.getElementById('form-group-zen-key') as HTMLDivElement;
 export const btnSettingsTest = document.getElementById('btn-settings-test') as HTMLButtonElement;
 export const settingsTestStatus = document.getElementById('settings-test-status') as HTMLSpanElement;
 export const btnGithubConnect = document.getElementById('btn-github-connect') as HTMLButtonElement;
@@ -123,6 +133,20 @@ export function autoResizeTextarea(textarea: HTMLTextAreaElement) {
   textarea.style.height = (textarea.scrollHeight) + 'px';
 }
 
+export function updateProviderFieldsVisibility() {
+  if (!cfgProvider) return;
+  const provider = cfgProvider.value;
+  if (provider === 'opencode-zen') {
+    if (formGroupApiUrl) formGroupApiUrl.classList.add('hidden');
+    if (formGroupApiKey) formGroupApiKey.classList.add('hidden');
+    if (formGroupZenKey) formGroupZenKey.classList.remove('hidden');
+  } else {
+    if (formGroupApiUrl) formGroupApiUrl.classList.remove('hidden');
+    if (formGroupApiKey) formGroupApiKey.classList.remove('hidden');
+    if (formGroupZenKey) formGroupZenKey.classList.add('hidden');
+  }
+}
+
 // Settings and API functions
 export async function loadSettings() {
   try {
@@ -131,11 +155,15 @@ export async function loadSettings() {
 
     // Update labels and inputs
     if (lblWorkspace) lblWorkspace.textContent = appConfig.workspacePath;
+    if (cfgProvider) cfgProvider.value = appConfig.provider || 'custom';
     if (cfgApiUrl) cfgApiUrl.value = appConfig.apiUrl;
     if (cfgApiKey) cfgApiKey.value = appConfig.apiKey;
+    if (cfgOpencodeZenApiKey) cfgOpencodeZenApiKey.value = appConfig.opencodeZenApiKey || '';
     if (cfgModel) cfgModel.value = appConfig.model;
     if (cfgWorkspace) cfgWorkspace.value = appConfig.workspacePath;
     if (cfgSystemPrompt) cfgSystemPrompt.value = appConfig.systemPrompt;
+
+    updateProviderFieldsVisibility();
   } catch (err) {
     console.error("Error loading configurations:", err);
     alert("Could not connect to the backend server. Make sure it is running.");
@@ -145,8 +173,10 @@ export async function loadSettings() {
 export async function saveSettings() {
   if (!appConfig) return;
   const payload = {
+    provider: cfgProvider ? cfgProvider.value : 'custom',
     apiUrl: cfgApiUrl.value.trim(),
     apiKey: cfgApiKey.value.trim(),
+    opencodeZenApiKey: cfgOpencodeZenApiKey ? cfgOpencodeZenApiKey.value.trim() : '',
     model: cfgModel.value.trim(),
     workspacePath: cfgWorkspace.value.trim(),
     systemPrompt: cfgSystemPrompt.value.trim()
@@ -168,7 +198,7 @@ export async function saveSettings() {
       appConfig = data.config;
       if (lblWorkspace) lblWorkspace.textContent = appConfig!.workspacePath;
       updateHeaderModelLabel();
-      loadApiModels(); // Refresh models list in case API URL changed
+      loadApiModels(); // Refresh models list in case provider or API URL changed
       if (settingsTestStatus) {
         settingsTestStatus.textContent = '';
         settingsTestStatus.className = 'settings-test-status';
@@ -304,6 +334,11 @@ export async function sendMessage() {
   // Reset Input UI
   chatInput.value = '';
   chatInput.style.height = 'auto';
+
+  await startAgentStream(activeChatId, false);
+}
+
+export async function startAgentStream(chatId: number | null, isReconnect: boolean) {
   chatInput.disabled = true;
   btnSend.disabled = true;
 
@@ -331,10 +366,14 @@ export async function sendMessage() {
   };
 
   try {
+    const payload = isReconnect
+      ? { chatId, reconnect: true }
+      : { messages: conversationHistory, chatId };
+
     const response = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: conversationHistory, chatId: activeChatId })
+      body: JSON.stringify(payload)
     });
 
     if (!response.ok) {
@@ -361,6 +400,17 @@ export async function sendMessage() {
           const payload = JSON.parse(jsonStr) as SSEEvent;
 
           switch (payload.type) {
+              case 'metadata':
+                if (payload.startIndex !== undefined) {
+                  conversationHistory = conversationHistory.slice(0, payload.startIndex + 1);
+                  renderConversation();
+                }
+              if (payload.chatId) {
+                activeChatId = payload.chatId;
+                localStorage.setItem('activeChatId', activeChatId.toString());
+              }
+              break;
+
             case 'status':
               statusText.textContent = payload.content;
               break;
@@ -416,7 +466,10 @@ export async function sendMessage() {
               break;
 
             case 'done':
-              if (payload.chatId) activeChatId = payload.chatId;
+              if (payload.chatId) {
+                activeChatId = payload.chatId;
+                localStorage.setItem('activeChatId', activeChatId.toString());
+              }
               break;
           }
         } catch (parseErr) {
@@ -674,9 +727,60 @@ function reallyOpenModelPicker() {
   if (modelPickerSearch) {
     modelPickerSearch.value = '';
     if (modelPickerClear) modelPickerClear.classList.add('hidden');
+    
+    // Set active provider tab
+    const currentProvider = appConfig?.provider || 'custom';
+    updateModelPickerProviderTabs(currentProvider);
+
     renderModelPickerList('');
     toggleModal(modalModelPicker, true);
     setTimeout(() => modelPickerSearch.focus(), 50);
+  }
+}
+
+export function updateModelPickerProviderTabs(provider: 'custom' | 'opencode-zen') {
+  if (btnPickerProviderCustom) {
+    if (provider === 'custom') btnPickerProviderCustom.classList.add('active');
+    else btnPickerProviderCustom.classList.remove('active');
+  }
+  if (btnPickerProviderZen) {
+    if (provider === 'opencode-zen') btnPickerProviderZen.classList.add('active');
+    else btnPickerProviderZen.classList.remove('active');
+  }
+}
+
+export async function switchPickerProvider(provider: 'custom' | 'opencode-zen') {
+  if (!appConfig) return;
+  
+  updateModelPickerProviderTabs(provider);
+  
+  // Show loading indicator
+  if (modelPickerList) {
+    modelPickerList.innerHTML = '<div class="model-picker-empty">Loading models for ' + (provider === 'custom' ? 'Custom' : 'Opencode Zen') + '...</div>';
+  }
+
+  try {
+    // Save provider change to server
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider })
+    });
+    const data = await res.json();
+    if (data.success) {
+      appConfig = data.config;
+      if (cfgProvider) cfgProvider.value = provider;
+      updateProviderFieldsVisibility();
+      
+      // Reload models for this provider
+      await loadApiModels();
+      renderModelPickerList(modelPickerSearch ? modelPickerSearch.value : '');
+    }
+  } catch (err) {
+    console.error("Failed to switch provider:", err);
+    if (modelPickerList) {
+      modelPickerList.innerHTML = '<div class="model-picker-empty" style="color:var(--color-accent);">Failed to load models. Check connection settings.</div>';
+    }
   }
 }
 
@@ -998,12 +1102,20 @@ function renderChatsList(chats: Chat[]) {
 
 export async function selectChat(id: number) {
   activeChatId = id;
+  localStorage.setItem('activeChatId', id.toString());
   chatMessages.innerHTML = '<div style="padding:16px; color:var(--color-accent); font-family:monospace;">Loading chat history...</div>';
   try {
     const res = await fetch(`/api/chats/${id}`);
     const data = await res.json() as Chat;
     conversationHistory = data.messages || [];
     renderConversation();
+
+    // Check if the agent is currently running for this chat
+    const statusRes = await fetch(`/api/chat/status?chatId=${id}`);
+    const statusData = await statusRes.json();
+    if (statusData.running) {
+      startAgentStream(id, true);
+    }
   } catch (err) {
     console.error("Failed to load chat details:", err);
     chatMessages.innerHTML = '<div style="padding:16px; color:var(--color-accent); font-family:monospace;">Error loading chat.</div>';
@@ -1057,6 +1169,7 @@ function renderConversation() {
 
 export function startNewChat() {
   activeChatId = null;
+  localStorage.removeItem('activeChatId');
   conversationHistory = [];
   chatMessages.innerHTML = `
     <div class="message system-message">
@@ -1132,6 +1245,13 @@ export function setupEventListeners() {
   btnGithubConnect?.addEventListener('click', connectGithub);
   btnGithubDisconnect?.addEventListener('click', disconnectGithub);
 
+  cfgProvider?.addEventListener('change', () => {
+    updateProviderFieldsVisibility();
+  });
+
+  btnPickerProviderCustom?.addEventListener('click', () => switchPickerProvider('custom'));
+  btnPickerProviderZen?.addEventListener('click', () => switchPickerProvider('opencode-zen'));
+
   btnRunTerm?.addEventListener('click', runManualCommand);
   termCommand?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') runManualCommand();
@@ -1173,6 +1293,14 @@ export async function init() {
   await loadApiModels();
   await refreshGithubStatus();
   loadChats();
+
+  // Re-load last active chat if stored
+  const savedChatId = localStorage.getItem('activeChatId');
+  if (savedChatId) {
+    selectChat(parseInt(savedChatId));
+  } else {
+    startNewChat();
+  }
 }
 
 // Global UI Helpers (for window object)

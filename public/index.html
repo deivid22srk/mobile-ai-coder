@@ -120,12 +120,23 @@
         </div>
         <div class="settings-card">
           <div class="form-group">
+            <label for="cfg-provider">API Provider</label>
+            <select id="cfg-provider" class="settings-select" style="width: 100%; padding: 10px; border-radius: 6px; background: var(--color-bg-card); color: var(--color-text-main); border: 1px solid var(--color-border);">
+              <option value="custom">Custom (OpenAI Compatible)</option>
+              <option value="opencode-zen">Opencode Zen</option>
+            </select>
+          </div>
+          <div class="form-group" id="form-group-api-url">
             <label for="cfg-api-url">OpenAI Compatible API URL</label>
             <input type="text" id="cfg-api-url" placeholder="https://api.openai.com/v1" autocomplete="off">
           </div>
-          <div class="form-group">
+          <div class="form-group" id="form-group-api-key">
             <label for="cfg-api-key">API Key</label>
             <input type="password" id="cfg-api-key" placeholder="Enter API Key" autocomplete="off">
+          </div>
+          <div class="form-group hidden" id="form-group-zen-key">
+            <label for="cfg-opencode-zen-api-key">Opencode Zen API Key</label>
+            <input type="password" id="cfg-opencode-zen-api-key" placeholder="Enter Opencode Zen API Key" autocomplete="off">
           </div>
           <div class="form-group settings-form-group-last">
             <div class="settings-label-row">
@@ -215,7 +226,14 @@
         <h3>Select Model</h3>
         <button class="close-button" data-close-model-picker>&times;</button>
       </div>
-      <div class="model-picker-search-row">
+      
+      <!-- Provider Selector in Model Picker -->
+      <div class="model-picker-provider-selector" style="padding: 0 16px 12px 16px; border-bottom: 1px solid var(--color-border); display: flex; gap: 8px;">
+        <button id="btn-picker-provider-custom" class="provider-tab active" type="button">Custom</button>
+        <button id="btn-picker-provider-zen" class="provider-tab" type="button">Opencode Zen</button>
+      </div>
+
+      <div class="model-picker-search-row" style="margin-top: 12px;">
         <svg class="model-picker-search-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
         <input type="text" id="model-picker-search" class="model-picker-search" placeholder="Search models..." autocomplete="off" />
         <button id="model-picker-clear" class="model-picker-clear hidden" type="button" aria-label="Clear search">&times;</button>

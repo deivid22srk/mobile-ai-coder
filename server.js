@@ -71,7 +71,7 @@ class JSONDb {
     this.write(data);
   }
 
-  saveMessage(chatId, role, content, type = 'text') {
+  saveMessage(chatId, role, content, type = 'text', toolCallId = null, toolCalls = null) {
     const data = this.read();
     const newMessage = {
       id: data.messages.length > 0 ? Math.max(...data.messages.map(m => m.id)) + 1 : 1,
@@ -81,6 +81,8 @@ class JSONDb {
       type,
       createdAt: new Date().toISOString()
     };
+    if (toolCallId) newMessage.tool_call_id = toolCallId;
+    if (toolCalls) newMessage.tool_calls = toolCalls;
     data.messages.push(newMessage);
     this.write(data);
     return newMessage;
@@ -91,8 +93,10 @@ const db = new JSONDb(DB_FILE);
 
 // Default configurations
 const DEFAULT_CONFIG = {
+  provider: 'custom',
   apiUrl: 'https://qwenproxy-cookies.onrender.com/v1',
   apiKey: '0',
+  opencodeZenApiKey: '',
   model: 'qwen-plus',
   systemPrompt: 'You are Claude Code Mobile, a powerful agentic AI coding assistant. You have access to local tools in the workspace: write_file, read_file, list_dir, run_command, git_clone, and (when the user has connected GitHub) github_list_repos, github_create_repo, github_push_files, github_get_user.\n\nUse these tools to help the user. Always explain what you are doing (e.g. "I am going to read the index.html file to inspect its content") right before invoking a tool. Make sure code changes are correct and tested.',
   workspacePath: path.join(__dirname, 'workspace'),
@@ -122,6 +126,20 @@ async function saveConfig(config) {
   } catch (err) {
     console.error("Could not create workspace directory:", err);
   }
+}
+
+function getActiveConnectionInfo(config) {
+  const provider = config.provider || 'custom';
+  if (provider === 'opencode-zen') {
+    return {
+      apiUrl: 'https://opencode.ai/zen/v1',
+      apiKey: config.opencodeZenApiKey || ''
+    };
+  }
+  return {
+    apiUrl: config.apiUrl || 'https://qwenproxy-cookies.onrender.com/v1',
+    apiKey: config.apiKey || '0'
+  };
 }
 
 // Check workspace paths to prevent directory traversal
@@ -612,13 +630,14 @@ app.post('/api/terminal/run', async (req, res) => {
 app.get('/api/models', async (req, res) => {
   try {
     const config = await getConfig();
+    const conn = getActiveConnectionInfo(config);
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
 
-    const apiResponse = await fetch(`${config.apiUrl}/models`, {
+    const apiResponse = await fetch(`${conn.apiUrl}/models`, {
       method: 'GET',
       headers: {
-        'Authorization': `Bearer ${config.apiKey}`
+        'Authorization': `Bearer ${conn.apiKey}`
       },
       signal: controller.signal
     });
@@ -715,21 +734,476 @@ function executeCommandWithStreaming(command, cwd, id, sendEvent, timeoutSec = 1
   });
 }
 
-// Chat SSE completion agent
-app.post('/api/chat', async (req, res) => {
-  const config = await getConfig();
-  const clientMessages = req.body.messages || [];
-  let chatId = req.body.chatId;
+// Active background executions
+const activeExecutions = new Map();
 
-  // Persistence helpers
-  const saveMessage = (role, content, type = 'text') => {
-    if (!chatId) return;
+function cleanMessagesForApi(messages) {
+  return messages.map(msg => {
+    const clean = {
+      role: msg.role,
+      content: msg.content
+    };
+    if (msg.tool_call_id) clean.tool_call_id = msg.tool_call_id;
+    if (msg.tool_calls) clean.tool_calls = msg.tool_calls;
+    if (msg.name) clean.name = msg.name;
+    return clean;
+  });
+}
+
+async function runAgentExecution(chatId, clientMessages) {
+  // If already running, return the existing execution
+  if (activeExecutions.has(chatId)) {
+    return activeExecutions.get(chatId);
+  }
+
+  const config = await getConfig();
+
+  // Get current message count in DB before adding this turn's messages
+  const chatDataBefore = db.getChat(chatId);
+  const startIndex = chatDataBefore ? (chatDataBefore.messages || []).length : 0;
+
+  const execution = {
+    chatId,
+    startIndex,
+    events: [],
+    clients: new Set(),
+    done: false,
+    error: null,
+    promise: null
+  };
+  activeExecutions.set(chatId, execution);
+
+  // Helper to send events to all connected clients and buffer them
+  const broadcastEvent = (type, data) => {
+    const eventPayload = { type, ...data };
+    if (type === 'tool_output' && data.content && !data.output) {
+      eventPayload.output = data.content;
+    }
+    execution.events.push(eventPayload);
+    for (const res of execution.clients) {
+      try {
+        res.write(`data: ${JSON.stringify(eventPayload)}\n\n`);
+      } catch (err) {
+        console.error("Error writing to client SSE:", err);
+      }
+    }
+  };
+
+  const saveMessage = (role, content, type = 'text', toolCallId = null, toolCalls = null) => {
     try {
-      db.saveMessage(chatId, role, content, type);
+      db.saveMessage(chatId, role, content, type, toolCallId, toolCalls);
     } catch (err) {
       console.error("Failed to persist message:", err);
     }
   };
+
+  // Persist the last user message if it's new
+  if (clientMessages.length > 0) {
+    const lastMsg = clientMessages[clientMessages.length - 1];
+    if (lastMsg.role === 'user') {
+      saveMessage('user', lastMsg.content);
+    }
+  }
+
+  // Compile active messages history with system prompt
+  let messages = [
+    { role: 'system', content: config.systemPrompt },
+    ...clientMessages
+  ];
+
+  // Run the background execution
+  execution.promise = (async () => {
+    let loopLimit = 15; // Limit tool loop to prevent infinite runs
+    let currentIteration = 0;
+
+    try {
+      while (currentIteration < loopLimit) {
+        currentIteration++;
+        broadcastEvent('status', { content: 'Thinking...' });
+
+        // Call LLM API (OpenAI specification) with stream: true
+        const controller = new AbortController();
+
+        const conn = getActiveConnectionInfo(config);
+        const apiResponse = await fetch(`${conn.apiUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${conn.apiKey}`
+          },
+          body: JSON.stringify({
+            model: config.model,
+            messages: cleanMessagesForApi(messages),
+            tools: toolsDefinition,
+            tool_choice: 'auto',
+            stream: true
+          }),
+          signal: controller.signal
+        });
+
+        if (!apiResponse.ok) {
+          const errorText = await apiResponse.text();
+          throw new Error(`LLM API returned error: ${apiResponse.status} ${errorText}`);
+        }
+
+        // Accumulator variables for this stream
+        let assistantContent = '';
+        let assistantReasoning = '';
+        let accumulatedToolCalls = [];
+        let isThinkingInline = false;
+
+        const reader = apiResponse.body;
+        const decoder = new TextDecoder();
+        let streamBuffer = '';
+
+        for await (const chunk of reader) {
+          streamBuffer += decoder.decode(chunk, { stream: true });
+          const lines = streamBuffer.split('\n');
+          streamBuffer = lines.pop(); // Keep partial line
+
+          for (const line of lines) {
+            const cleanedLine = line.trim();
+            if (!cleanedLine) continue;
+            if (cleanedLine === 'data: [DONE]') continue;
+            
+            if (cleanedLine.startsWith('data: ')) {
+              const dataStr = cleanedLine.slice(6);
+              try {
+                const data = JSON.parse(dataStr);
+                const choice = data.choices?.[0];
+                if (!choice) continue;
+
+                const delta = choice.delta;
+
+                // 1. Handle native reasoning content
+                if (delta.reasoning_content) {
+                  assistantReasoning += delta.reasoning_content;
+                  broadcastEvent('reasoning', { content: delta.reasoning_content });
+                }
+
+                // 2. Handle streamed content (with potential inline <think> tags)
+                if (delta.content) {
+                  let textChunk = delta.content;
+
+                  // Match inline <think> or <thought>
+                  if (textChunk.includes('<think>') || textChunk.includes('<thought>')) {
+                    isThinkingInline = true;
+                    const tag = textChunk.includes('<think>') ? '<think>' : '<thought>';
+                    const parts = textChunk.split(tag);
+                    if (parts[0]) {
+                      assistantContent += parts[0];
+                      broadcastEvent('text', { content: parts[0] });
+                    }
+                    if (parts[1]) {
+                      assistantReasoning += parts[1];
+                      broadcastEvent('reasoning', { content: parts[1] });
+                    }
+                    continue;
+                  }
+
+                  // Match inline </think> or </thought>
+                  if (textChunk.includes('</think>') || textChunk.includes('</thought>')) {
+                    isThinkingInline = false;
+                    const tag = textChunk.includes('</think>') ? '</think>' : '</thought>';
+                    const parts = textChunk.split(tag);
+                    if (parts[0]) {
+                      assistantReasoning += parts[0];
+                      broadcastEvent('reasoning', { content: parts[0] });
+                    }
+                    if (parts[1]) {
+                      assistantContent += parts[1];
+                      broadcastEvent('text', { content: parts[1] });
+                    }
+                    continue;
+                  }
+
+                  if (isThinkingInline) {
+                    assistantReasoning += textChunk;
+                    broadcastEvent('reasoning', { content: textChunk });
+                  } else {
+                    assistantContent += textChunk;
+                    broadcastEvent('text', { content: textChunk });
+                  }
+                }
+
+                // 3. Accumulate tool calls chunks
+                if (delta.tool_calls) {
+                  for (const tc of delta.tool_calls) {
+                    const idx = tc.index;
+                    if (!accumulatedToolCalls[idx]) {
+                      accumulatedToolCalls[idx] = {
+                        id: tc.id || '',
+                        name: tc.function?.name || '',
+                        arguments: tc.function?.arguments || ''
+                      };
+                    } else {
+                      if (tc.id) accumulatedToolCalls[idx].id = tc.id;
+                      if (tc.function?.name) accumulatedToolCalls[idx].name = tc.function.name;
+                      if (tc.function?.arguments) accumulatedToolCalls[idx].arguments += tc.function.arguments;
+                    }
+                  }
+                }
+
+              } catch (err) {
+                console.error("Error parsing LLM stream chunk:", line, err);
+              }
+            }
+          }
+        }
+
+        // Stream response finished successfully
+        const toolCalls = accumulatedToolCalls.filter(x => x !== undefined);
+
+        // Build assistant message object matching OpenAI spec
+        const assistantMessage = {
+          role: 'assistant',
+          content: assistantContent
+        };
+        if (assistantReasoning) {
+          assistantMessage.reasoning_content = assistantReasoning;
+        }
+        if (toolCalls.length > 0) {
+          assistantMessage.tool_calls = toolCalls.map(tc => ({
+            id: tc.id,
+            type: 'function',
+            function: {
+              name: tc.name,
+              arguments: tc.arguments
+            }
+          }));
+        }
+
+        // If LLM wants to invoke tools
+        if (toolCalls.length > 0) {
+          // We push assistant message (including the tool calls) to history
+          messages.push(assistantMessage);
+
+          broadcastEvent('status', { content: 'Analyzing tools...' });
+
+          for (const toolCall of toolCalls) {
+            const { name, id } = toolCall;
+            let args = {};
+            try {
+              args = typeof toolCall.arguments === 'string' 
+                ? JSON.parse(toolCall.arguments) 
+                : toolCall.arguments;
+            } catch (e) {
+              console.error("Failed to parse tool arguments:", toolCall.arguments);
+            }
+
+            // Emit tool execution started
+            broadcastEvent('tool_start', { id, name, args });
+
+            let toolOutput = '';
+            try {
+              switch (name) {
+                case 'list_dir': {
+                  const target = resolveWorkspacePath(config.workspacePath, args.relative_path);
+                  const files = await fs.readdir(target, { withFileTypes: true });
+                  const list = await Promise.all(files.map(async file => {
+                    const absolute = path.join(target, file.name);
+                    let size = 0;
+                    if (file.isFile()) {
+                      try {
+                        const stat = await fs.stat(absolute);
+                        size = stat.size;
+                      } catch (_) {}
+                    }
+                    return {
+                      name: file.name,
+                      isDirectory: file.isDirectory(),
+                      size
+                    };
+                  }));
+                  toolOutput = JSON.stringify(list);
+                  break;
+                }
+                case 'read_file': {
+                  const filePath = resolveWorkspacePath(config.workspacePath, args.relative_path);
+                  toolOutput = await fs.readFile(filePath, 'utf-8');
+                  break;
+                }
+                case 'write_file': {
+                  const filePath = resolveWorkspacePath(config.workspacePath, args.relative_path);
+                  await fs.mkdir(path.dirname(filePath), { recursive: true });
+                  await fs.writeFile(filePath, args.content || '', 'utf-8');
+                  toolOutput = `Successfully wrote to file ${args.relative_path}`;
+                  break;
+                }
+                case 'run_command': {
+                  toolOutput = await executeCommandWithStreaming(args.command, config.workspacePath, id, broadcastEvent, 120);
+                  break;
+                }
+                case 'git_clone': {
+                  const repoUrl = args.repo_url;
+                  const relPath = args.relative_path;
+                  const cmd = relPath ? `git clone "${repoUrl}" "${relPath}"` : `git clone "${repoUrl}"`;
+                  toolOutput = await executeCommandWithStreaming(cmd, config.workspacePath, id, broadcastEvent, 180);
+                  break;
+                }
+                case 'github_get_user': {
+                  const data = await githubRequest('/user');
+                  toolOutput = JSON.stringify({
+                    login: data.login,
+                    name: data.name,
+                    avatar_url: data.avatar_url,
+                    html_url: data.html_url,
+                    public_repos: data.public_repos,
+                    private_repos: (data.total_private_repos != null ? data.total_private_repos : null)
+                  });
+                  break;
+                }
+                case 'github_list_repos': {
+                  const visibility = args.visibility || 'owner';
+                  const perPage = Math.min(Math.max(parseInt(args.per_page, 10) || 30, 1), 100);
+                  const data = await githubRequest(`/user/repos?visibility=${encodeURIComponent(visibility)}&per_page=${perPage}&sort=updated`);
+                  toolOutput = JSON.stringify(data.map(r => ({
+                    name: r.name,
+                    full_name: r.full_name,
+                    private: r.private,
+                    html_url: r.html_url,
+                    description: r.description,
+                    default_branch: r.default_branch,
+                    updated_at: r.updated_at
+                  })));
+                  break;
+                }
+                case 'github_create_repo': {
+                  const body = {
+                    name: args.name,
+                    description: args.description || '',
+                    private: Boolean(args.private),
+                    auto_init: args.auto_init !== false
+                  };
+                  const data = await githubRequest('/user/repos', { method: 'POST', body });
+                  toolOutput = JSON.stringify({
+                    name: data.name,
+                    full_name: data.full_name,
+                    html_url: data.html_url,
+                    private: data.private,
+                    default_branch: data.default_branch,
+                    clone_url: data.clone_url
+                  });
+                  break;
+                }
+                case 'github_push_files': {
+                  const cfg = await getConfig();
+                  const owner = args.owner || (cfg.githubUser && cfg.githubUser.login);
+                  const repo = args.repo;
+                  if (!owner) {
+                    throw new Error('Could not determine repository owner. Connect GitHub first or pass owner explicitly.');
+                  }
+                  // Resolve default branch if not provided
+                  let branch = args.branch;
+                  if (!branch) {
+                    const repoInfo = await githubRequest(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
+                    branch = repoInfo.default_branch;
+                  }
+                  const files = Array.isArray(args.files) ? args.files : [];
+                  if (files.length === 0) {
+                    throw new Error('No files provided to github_push_files.');
+                  }
+                  const commitMessage = args.commit_message || `Update ${files.length} file(s) via mobile-code-agent`;
+                  const results = [];
+                  for (const file of files) {
+                    let sha;
+                    try {
+                      const existing = await githubRequest(
+                        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodeURIComponent(file.path)}?ref=${encodeURIComponent(branch)}`
+                      );
+                      if (existing && existing.sha) sha = existing.sha;
+                    } catch (_) {}
+                    const body = {
+                      message: commitMessage,
+                      branch,
+                      content: Buffer.from(String(file.content), 'utf-8').toString('base64')
+                    };
+                    if (sha) body.sha = sha;
+                    const result = await githubRequest(
+                      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodeURIComponent(file.path)}`,
+                      { method: 'PUT', body }
+                    );
+                    results.push({
+                      path: file.path,
+                      commit_sha: result.commit && result.commit.sha,
+                      content_url: result.content && result.content.html_url
+                    });
+                  }
+                  toolOutput = JSON.stringify({ owner, repo, branch, count: results.length, files: results });
+                  break;
+                }
+                default:
+                  toolOutput = `Error: Tool ${name} not found.`;
+              }
+            } catch (toolErr) {
+              toolOutput = `Error executing tool: ${toolErr.message}`;
+            }
+
+            // Emit tool execution finished
+            broadcastEvent('tool_end', { id, name, output: toolOutput });
+
+            // Append tool message response to history
+            messages.push({
+              role: 'tool',
+              tool_call_id: id,
+              name: name,
+              content: toolOutput
+            });
+
+            // Persist tool call and output
+            saveMessage('assistant', `Call tool: ${name} with args ${JSON.stringify(args)}`, 'tool_call', null, [{
+              id: id,
+              type: 'function',
+              function: { name, arguments: typeof args === 'string' ? args : JSON.stringify(args) }
+            }]);
+            saveMessage('tool', toolOutput, 'tool_output', id);
+          }
+
+          // Loop continues to feed tool outputs back to LLM
+          continue;
+        } else {
+          // No tool calls means we are finished
+          messages.push(assistantMessage);
+        }
+
+        break;
+      }
+
+      broadcastEvent('done', { chatId });
+      // Persist final assistant message
+      const finalAssistant = messages[messages.length - 1];
+      if (finalAssistant && finalAssistant.role === 'assistant' && !finalAssistant.tool_calls) {
+        saveMessage('assistant', finalAssistant.content);
+      }
+    } catch (err) {
+      console.error("Agent execution error:", err);
+      broadcastEvent('error', { content: err.message });
+    } finally {
+      execution.done = true;
+      activeExecutions.delete(chatId);
+    }
+  })();
+
+  return execution;
+}
+
+// Get status of active agent execution
+app.get('/api/chat/status', (req, res) => {
+  try {
+    const chatId = parseInt(req.query.chatId);
+    if (!chatId) return res.status(400).json({ error: 'Missing chatId' });
+    const execution = activeExecutions.get(chatId);
+    res.json({ running: !!execution, chatId });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Chat SSE completion agent
+app.post('/api/chat', async (req, res) => {
+  const clientMessages = req.body.messages || [];
+  let chatId = req.body.chatId;
+  const reconnect = req.body.reconnect;
 
   // If this is the first message in a new chat, we might need to create it
   if (!chatId && clientMessages.length > 0) {
@@ -740,15 +1214,12 @@ app.post('/api/chat', async (req, res) => {
       chatId = newChat.id;
     } catch (err) {
       console.error("Failed to create chat for persistence:", err);
+      return res.status(500).json({ error: err.message });
     }
   }
 
-  // Persist the last user message if it's new
-  if (chatId && clientMessages.length > 0) {
-    const lastMsg = clientMessages[clientMessages.length - 1];
-    if (lastMsg.role === 'user') {
-      saveMessage('user', lastMsg.content);
-    }
+  if (!chatId) {
+    return res.status(400).json({ error: 'Chat ID is required' });
   }
 
   // Setup Server-Sent Events headers
@@ -757,389 +1228,41 @@ app.post('/api/chat', async (req, res) => {
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders(); // Establish connection
 
-  const sendEvent = (type, data) => {
-    res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
-  };
-
-  // Compile active messages history with system prompt
-  let messages = [
-    { role: 'system', content: config.systemPrompt },
-    ...clientMessages
-  ];
-
-  let loopLimit = 15; // Limit tool loop to prevent infinite runs
-  let currentIteration = 0;
-
-  try {
-    while (currentIteration < loopLimit) {
-      currentIteration++;
-      sendEvent('status', { content: 'Thinking...' });
-
-      // Call LLM API (OpenAI specification) with stream: true
-      const controller = new AbortController();
-
-      // Cancel LLM call if client closes the tab
-      req.on('close', () => {
-        controller.abort();
-      });
-
-      const apiResponse = await fetch(`${config.apiUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${config.apiKey}`
-        },
-        body: JSON.stringify({
-          model: config.model,
-          messages: messages,
-          tools: toolsDefinition,
-          tool_choice: 'auto',
-          stream: true
-        }),
-        signal: controller.signal
-      });
-
-      if (!apiResponse.ok) {
-        const errorText = await apiResponse.text();
-        throw new Error(`LLM API returned error: ${apiResponse.status} ${errorText}`);
-      }
-
-      // Accumulator variables for this stream
-      let assistantContent = '';
-      let assistantReasoning = '';
-      let accumulatedToolCalls = [];
-      let isThinkingInline = false;
-
-      const reader = apiResponse.body;
-      const decoder = new TextDecoder();
-      let streamBuffer = '';
-
-      for await (const chunk of reader) {
-        streamBuffer += decoder.decode(chunk, { stream: true });
-        const lines = streamBuffer.split('\n');
-        streamBuffer = lines.pop(); // Keep partial line
-
-        for (const line of lines) {
-          const cleanedLine = line.trim();
-          if (!cleanedLine) continue;
-          if (cleanedLine === 'data: [DONE]') continue;
-          
-          if (cleanedLine.startsWith('data: ')) {
-            const dataStr = cleanedLine.slice(6);
-            try {
-              const data = JSON.parse(dataStr);
-              const choice = data.choices?.[0];
-              if (!choice) continue;
-
-              const delta = choice.delta;
-
-              // 1. Handle native reasoning content
-              if (delta.reasoning_content) {
-                assistantReasoning += delta.reasoning_content;
-                sendEvent('reasoning', { content: delta.reasoning_content });
-              }
-
-              // 2. Handle streamed content (with potential inline <think> tags)
-              if (delta.content) {
-                let textChunk = delta.content;
-
-                // Match inline <think> or <thought>
-                if (textChunk.includes('<think>') || textChunk.includes('<thought>')) {
-                  isThinkingInline = true;
-                  const tag = textChunk.includes('<think>') ? '<think>' : '<thought>';
-                  const parts = textChunk.split(tag);
-                  if (parts[0]) {
-                    assistantContent += parts[0];
-                    sendEvent('text', { content: parts[0] });
-                  }
-                  if (parts[1]) {
-                    assistantReasoning += parts[1];
-                    sendEvent('reasoning', { content: parts[1] });
-                  }
-                  continue;
-                }
-
-                // Match inline </think> or </thought>
-                if (textChunk.includes('</think>') || textChunk.includes('</thought>')) {
-                  isThinkingInline = false;
-                  const tag = textChunk.includes('</think>') ? '</think>' : '</thought>';
-                  const parts = textChunk.split(tag);
-                  if (parts[0]) {
-                    assistantReasoning += parts[0];
-                    sendEvent('reasoning', { content: parts[0] });
-                  }
-                  if (parts[1]) {
-                    assistantContent += parts[1];
-                    sendEvent('text', { content: parts[1] });
-                  }
-                  continue;
-                }
-
-                if (isThinkingInline) {
-                  assistantReasoning += textChunk;
-                  sendEvent('reasoning', { content: textChunk });
-                } else {
-                  assistantContent += textChunk;
-                  sendEvent('text', { content: textChunk });
-                }
-              }
-
-              // 3. Accumulate tool calls chunks
-              if (delta.tool_calls) {
-                for (const tc of delta.tool_calls) {
-                  const idx = tc.index;
-                  if (!accumulatedToolCalls[idx]) {
-                    accumulatedToolCalls[idx] = {
-                      id: tc.id || '',
-                      name: tc.function?.name || '',
-                      arguments: tc.function?.arguments || ''
-                    };
-                  } else {
-                    if (tc.id) accumulatedToolCalls[idx].id = tc.id;
-                    if (tc.function?.name) accumulatedToolCalls[idx].name = tc.function.name;
-                    if (tc.function?.arguments) accumulatedToolCalls[idx].arguments += tc.function.arguments;
-                  }
-                }
-              }
-
-            } catch (err) {
-              console.error("Error parsing LLM stream chunk:", line, err);
-            }
-          }
-        }
-      }
-
-      // Stream response finished successfully
-
-      // Clean up accumulated tool calls array
-      const toolCalls = accumulatedToolCalls.filter(x => x !== undefined);
-
-      // Build assistant message object matching OpenAI spec
-      const assistantMessage = {
-        role: 'assistant',
-        content: assistantContent
-      };
-      if (assistantReasoning) {
-        assistantMessage.reasoning_content = assistantReasoning;
-      }
-      if (toolCalls.length > 0) {
-        assistantMessage.tool_calls = toolCalls.map(tc => ({
-          id: tc.id,
-          type: 'function',
-          function: {
-            name: tc.name,
-            arguments: tc.arguments
-          }
-        }));
-      }
-
-      // If LLM wants to invoke tools
-      if (toolCalls.length > 0) {
-        // We push assistant message (including the tool calls) to history
-        messages.push(assistantMessage);
-
-        sendEvent('status', { content: 'Analyzing tools...' });
-
-        for (const toolCall of toolCalls) {
-          const { name, id } = toolCall;
-          let args = {};
-          try {
-            args = typeof toolCall.arguments === 'string' 
-              ? JSON.parse(toolCall.arguments) 
-              : toolCall.arguments;
-          } catch (e) {
-            console.error("Failed to parse tool arguments:", toolCall.arguments);
-          }
-
-          // Emit tool execution started
-          sendEvent('tool_start', { id, name, args });
-
-          let toolOutput = '';
-          try {
-            switch (name) {
-              case 'list_dir': {
-                const target = resolveWorkspacePath(config.workspacePath, args.relative_path);
-                const files = await fs.readdir(target, { withFileTypes: true });
-                const list = await Promise.all(files.map(async file => {
-                  const absolute = path.join(target, file.name);
-                  let size = 0;
-                  if (file.isFile()) {
-                    try {
-                      const stat = await fs.stat(absolute);
-                      size = stat.size;
-                    } catch (_) {}
-                  }
-                  return {
-                    name: file.name,
-                    isDirectory: file.isDirectory(),
-                    size
-                  };
-                }));
-                toolOutput = JSON.stringify(list);
-                break;
-              }
-              case 'read_file': {
-                const filePath = resolveWorkspacePath(config.workspacePath, args.relative_path);
-                toolOutput = await fs.readFile(filePath, 'utf-8');
-                break;
-              }
-              case 'write_file': {
-                const filePath = resolveWorkspacePath(config.workspacePath, args.relative_path);
-                await fs.mkdir(path.dirname(filePath), { recursive: true });
-                await fs.writeFile(filePath, args.content || '', 'utf-8');
-                toolOutput = `Successfully wrote to file ${args.relative_path}`;
-                break;
-              }
-              case 'run_command': {
-                toolOutput = await executeCommandWithStreaming(args.command, config.workspacePath, id, sendEvent, 120);
-                break;
-              }
-              case 'git_clone': {
-                const repoUrl = args.repo_url;
-                const relPath = args.relative_path;
-                const cmd = relPath ? `git clone "${repoUrl}" "${relPath}"` : `git clone "${repoUrl}"`;
-                toolOutput = await executeCommandWithStreaming(cmd, config.workspacePath, id, sendEvent, 180);
-                break;
-              }
-              case 'github_get_user': {
-                const data = await githubRequest('/user');
-                toolOutput = JSON.stringify({
-                  login: data.login,
-                  name: data.name,
-                  avatar_url: data.avatar_url,
-                  html_url: data.html_url,
-                  public_repos: data.public_repos,
-                  private_repos: (data.total_private_repos != null ? data.total_private_repos : null)
-                });
-                break;
-              }
-              case 'github_list_repos': {
-                const visibility = args.visibility || 'owner';
-                const perPage = Math.min(Math.max(parseInt(args.per_page, 10) || 30, 1), 100);
-                const data = await githubRequest(`/user/repos?visibility=${encodeURIComponent(visibility)}&per_page=${perPage}&sort=updated`);
-                toolOutput = JSON.stringify(data.map(r => ({
-                  name: r.name,
-                  full_name: r.full_name,
-                  private: r.private,
-                  html_url: r.html_url,
-                  description: r.description,
-                  default_branch: r.default_branch,
-                  updated_at: r.updated_at
-                })));
-                break;
-              }
-              case 'github_create_repo': {
-                const body = {
-                  name: args.name,
-                  description: args.description || '',
-                  private: Boolean(args.private),
-                  auto_init: args.auto_init !== false
-                };
-                const data = await githubRequest('/user/repos', { method: 'POST', body });
-                toolOutput = JSON.stringify({
-                  name: data.name,
-                  full_name: data.full_name,
-                  html_url: data.html_url,
-                  private: data.private,
-                  default_branch: data.default_branch,
-                  clone_url: data.clone_url
-                });
-                break;
-              }
-              case 'github_push_files': {
-                const cfg = await getConfig();
-                const owner = args.owner || (cfg.githubUser && cfg.githubUser.login);
-                const repo = args.repo;
-                if (!owner) {
-                  throw new Error('Could not determine repository owner. Connect GitHub first or pass owner explicitly.');
-                }
-                // Resolve default branch if not provided
-                let branch = args.branch;
-                if (!branch) {
-                  const repoInfo = await githubRequest(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
-                  branch = repoInfo.default_branch;
-                }
-                const files = Array.isArray(args.files) ? args.files : [];
-                if (files.length === 0) {
-                  throw new Error('No files provided to github_push_files.');
-                }
-                const commitMessage = args.commit_message || `Update ${files.length} file(s) via mobile-code-agent`;
-                const results = [];
-                for (const file of files) {
-                  // Look up existing file SHA if updating
-                  let sha;
-                  try {
-                    const existing = await githubRequest(
-                      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodeURIComponent(file.path)}?ref=${encodeURIComponent(branch)}`
-                    );
-                    if (existing && existing.sha) sha = existing.sha;
-                  } catch (_) {
-                    // File doesn't exist yet — that's fine for new files
-                  }
-                  const body = {
-                    message: commitMessage,
-                    branch,
-                    content: Buffer.from(String(file.content), 'utf-8').toString('base64')
-                  };
-                  if (sha) body.sha = sha;
-                  const result = await githubRequest(
-                    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodeURIComponent(file.path)}`,
-                    { method: 'PUT', body }
-                  );
-                  results.push({
-                    path: file.path,
-                    commit_sha: result.commit && result.commit.sha,
-                    content_url: result.content && result.content.html_url
-                  });
-                }
-                toolOutput = JSON.stringify({ owner, repo, branch, count: results.length, files: results });
-                break;
-              }
-              default:
-                toolOutput = `Error: Tool ${name} not found.`;
-            }
-          } catch (toolErr) {
-            toolOutput = `Error executing tool: ${toolErr.message}`;
-          }
-
-          // Emit tool execution finished
-          sendEvent('tool_end', { id, name, output: toolOutput });
-
-          // Append tool message response to history
-          messages.push({
-            role: 'tool',
-            tool_call_id: id,
-            name: name,
-            content: toolOutput
-          });
-
-          // Persist tool call and output
-          saveMessage('assistant', `Call tool: ${name} with args ${JSON.stringify(args)}`, 'tool_call');
-          saveMessage('tool', toolOutput, 'tool_output');
-        }
-
-        // Loop continues to feed tool outputs back to LLM
-        continue;
-      } else {
-        // No tool calls means we are finished
-        messages.push(assistantMessage);
-      }
-
-      break;
+  // Get or start active execution
+  let execution = activeExecutions.get(chatId);
+  if (!execution) {
+    if (reconnect || clientMessages.length === 0) {
+      // Just send done and end connection if reconnect requested but none running
+      res.write(`data: ${JSON.stringify({ type: 'done', chatId })}\n\n`);
+      res.end();
+      return;
     }
-
-    sendEvent('done', { chatId });
-    // Persist final assistant message
-    const finalAssistant = messages[messages.length - 1];
-    if (finalAssistant && finalAssistant.role === 'assistant' && !finalAssistant.tool_calls) {
-      saveMessage('assistant', finalAssistant.content);
-    }
-  } catch (err) {
-    console.error("Chat handler error:", err);
-    sendEvent('error', { content: err.message });
-  } finally {
-    res.end();
+    execution = await runAgentExecution(chatId, clientMessages);
   }
+
+  // Subscribe this client response
+  execution.clients.add(res);
+
+  // Send the metadata event containing startIndex so client knows how to slice its UI list
+  res.write(`data: ${JSON.stringify({ type: 'metadata', startIndex: execution.startIndex, chatId })}\n\n`);
+
+  // Replay all buffered events to this client
+  for (const event of execution.events) {
+    res.write(`data: ${JSON.stringify(event)}\n\n`);
+  }
+
+  // If execution is already done, end immediately
+  if (execution.done) {
+    res.end();
+    return;
+  }
+
+  // Cancel LLM call if client closes the tab
+  req.on('close', () => {
+    if (execution) {
+      execution.clients.delete(res);
+    }
+  });
 });
 
 // Port configuration
