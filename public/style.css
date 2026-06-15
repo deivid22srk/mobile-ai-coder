@@ -1483,7 +1483,7 @@ textarea#chat-input {
   }
 
   .header-model-label {
-    display: none;
+    font-size: 0.7rem;
   }
 
   .model-trigger-chevron {
