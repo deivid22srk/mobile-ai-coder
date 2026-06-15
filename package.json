@@ -9,7 +9,6 @@
     "watch": "esbuild src/main.ts --bundle --outfile=public/bundle.js --watch"
   },
   "dependencies": {
-    "better-sqlite3": "^12.10.1",
     "cors": "^2.8.5",
     "express": "^4.21.2"
   },

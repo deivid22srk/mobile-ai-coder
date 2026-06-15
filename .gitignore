@@ -3,5 +3,5 @@ config.json
 workspace/
 .DS_Store
 *.log
-database.sqlite*
+database.json
 config.json

@@ -3,7 +3,7 @@ const cors = require('cors');
 const fs = require('fs').promises;
 const path = require('path');
 const { exec } = require('child_process');
-const Database = require('better-sqlite3');
+const fsSync = require('fs');
 
 const app = express();
 app.use(cors());
@@ -11,30 +11,83 @@ app.use(express.json());
 
 // Path to store config
 const CONFIG_FILE = path.join(__dirname, 'config.json');
-const DB_FILE = path.join(__dirname, 'database.sqlite');
+const DB_FILE = path.join(__dirname, 'database.json');
 
-// Initialize Database
-const db = new Database(DB_FILE);
-db.pragma('journal_mode = WAL');
+// Simple JSON Database for persistence (better for Termux/Android environments)
+class JSONDb {
+  constructor(filePath) {
+    this.filePath = filePath;
+    this.init();
+  }
 
-// Create tables
-db.exec(`
-  CREATE TABLE IF NOT EXISTS chats (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT NOT NULL,
-    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
+  init() {
+    if (!fsSync.existsSync(this.filePath)) {
+      const initialData = { chats: [], messages: [] };
+      fsSync.writeFileSync(this.filePath, JSON.stringify(initialData, null, 2), 'utf-8');
+    }
+  }
 
-  CREATE TABLE IF NOT EXISTS messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    chatId INTEGER NOT NULL,
-    role TEXT NOT NULL,
-    content TEXT NOT NULL,
-    type TEXT NOT NULL DEFAULT 'text',
-    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (chatId) REFERENCES chats(id) ON DELETE CASCADE
-  );
-`);
+  read() {
+    try {
+      const data = fsSync.readFileSync(this.filePath, 'utf-8');
+      return JSON.parse(data);
+    } catch (err) {
+      return { chats: [], messages: [] };
+    }
+  }
+
+  write(data) {
+    fsSync.writeFileSync(this.filePath, JSON.stringify(data, null, 2), 'utf-8');
+  }
+
+  getChats() {
+    return this.read().chats.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  }
+
+  createChat(title) {
+    const data = this.read();
+    const newChat = {
+      id: data.chats.length > 0 ? Math.max(...data.chats.map(c => c.id)) + 1 : 1,
+      title: title || 'New Chat',
+      createdAt: new Date().toISOString()
+    };
+    data.chats.push(newChat);
+    this.write(data);
+    return newChat;
+  }
+
+  getChat(id) {
+    const data = this.read();
+    const chat = data.chats.find(c => c.id === parseInt(id));
+    if (!chat) return null;
+    const messages = data.messages.filter(m => m.chatId === parseInt(id));
+    return { ...chat, messages };
+  }
+
+  deleteChat(id) {
+    const data = this.read();
+    data.chats = data.chats.filter(c => c.id !== parseInt(id));
+    data.messages = data.messages.filter(m => m.chatId !== parseInt(id));
+    this.write(data);
+  }
+
+  saveMessage(chatId, role, content, type = 'text') {
+    const data = this.read();
+    const newMessage = {
+      id: data.messages.length > 0 ? Math.max(...data.messages.map(m => m.id)) + 1 : 1,
+      chatId: parseInt(chatId),
+      role,
+      content: typeof content === 'string' ? content : JSON.stringify(content),
+      type,
+      createdAt: new Date().toISOString()
+    };
+    data.messages.push(newMessage);
+    this.write(data);
+    return newMessage;
+  }
+}
+
+const db = new JSONDb(DB_FILE);
 
 // Default configurations
 const DEFAULT_CONFIG = {
@@ -325,8 +378,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Chat History Endpoints
 app.get('/api/chats', (req, res) => {
   try {
-    const chats = db.prepare('SELECT * FROM chats ORDER BY createdAt DESC').all();
-    res.json(chats);
+    res.json(db.getChats());
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -335,9 +387,7 @@ app.get('/api/chats', (req, res) => {
 app.post('/api/chats', (req, res) => {
   try {
     const { title } = req.body;
-    const result = db.prepare('INSERT INTO chats (title) VALUES (?)').run(title || 'New Chat');
-    const newChat = db.prepare('SELECT * FROM chats WHERE id = ?').get(result.lastInsertRowid);
-    res.json(newChat);
+    res.json(db.createChat(title));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -345,10 +395,9 @@ app.post('/api/chats', (req, res) => {
 
 app.get('/api/chats/:id', (req, res) => {
   try {
-    const chat = db.prepare('SELECT * FROM chats WHERE id = ?').get(req.params.id);
+    const chat = db.getChat(req.params.id);
     if (!chat) return res.status(404).json({ error: 'Chat not found' });
-    const messages = db.prepare('SELECT * FROM messages WHERE chatId = ? ORDER BY createdAt ASC').all(req.params.id);
-    res.json({ ...chat, messages });
+    res.json(chat);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -356,7 +405,7 @@ app.get('/api/chats/:id', (req, res) => {
 
 app.delete('/api/chats/:id', (req, res) => {
   try {
-    db.prepare('DELETE FROM chats WHERE id = ?').run(req.params.id);
+    db.deleteChat(req.params.id);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -676,9 +725,7 @@ app.post('/api/chat', async (req, res) => {
   const saveMessage = (role, content, type = 'text') => {
     if (!chatId) return;
     try {
-      db.prepare('INSERT INTO messages (chatId, role, content, type) VALUES (?, ?, ?, ?)').run(
-        chatId, role, typeof content === 'string' ? content : JSON.stringify(content), type
-      );
+      db.saveMessage(chatId, role, content, type);
     } catch (err) {
       console.error("Failed to persist message:", err);
     }
@@ -689,8 +736,8 @@ app.post('/api/chat', async (req, res) => {
     try {
       const firstUserMsg = clientMessages.find(m => m.role === 'user');
       const title = firstUserMsg ? (firstUserMsg.content.slice(0, 50) + (firstUserMsg.content.length > 50 ? '...' : '')) : 'New Chat';
-      const result = db.prepare('INSERT INTO chats (title) VALUES (?)').run(title);
-      chatId = result.lastInsertRowid;
+      const newChat = db.createChat(title);
+      chatId = newChat.id;
     } catch (err) {
       console.error("Failed to create chat for persistence:", err);
     }
