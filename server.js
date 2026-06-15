@@ -95,7 +95,7 @@ const db = new JSONDb(DB_FILE);
 // Default configurations
 const DEFAULT_CONFIG = {
   provider: 'custom',
-  apiUrl: 'https://qwenproxy-cookies.onrender.com/v1',
+  apiUrl: '',
   apiKey: '0',
   opencodeZenApiKey: '',
   model: 'qwen-plus',
@@ -138,7 +138,7 @@ function getActiveConnectionInfo(config) {
     };
   }
   return {
-    apiUrl: config.apiUrl || 'https://qwenproxy-cookies.onrender.com/v1',
+    apiUrl: config.apiUrl || '',
     apiKey: config.apiKey || '0'
   };
 }

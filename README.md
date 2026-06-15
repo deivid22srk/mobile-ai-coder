@@ -63,7 +63,7 @@ On first launch, the app creates a `config.json` with defaults. You can change a
 
 | Setting | Default | Description |
 |---|---|---|
-| `apiUrl` | `https://qwenproxy-cookies.onrender.com/v1` | OpenAI-compatible API endpoint |
+| `apiUrl` | *(empty)* | OpenAI-compatible API endpoint |
 | `apiKey` | `0` | API authentication key |
 | `model` | `qwen-plus` | Default LLM model |
 | `workspacePath` | `./workspace` | Sandboxed directory for file operations |
