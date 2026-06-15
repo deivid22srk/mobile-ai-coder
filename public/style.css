@@ -25,6 +25,7 @@
   
   --header-height: 56px;
   --footer-height: 64px;
+  --sidebar-width: 280px;
 }
 
 /* Base Styles */
@@ -1619,4 +1620,101 @@ textarea#chat-input {
   background: var(--color-accent);
   border-color: var(--color-accent);
   color: #FFFFFF;
+}
+
+/* -------------------------------------------------------------
+ * Desktop Layout (>= 1024px)
+ * ------------------------------------------------------------- */
+@media (min-width: 1024px) {
+  .app-container {
+    display: grid;
+    grid-template-columns: var(--sidebar-width) 1fr;
+    grid-template-rows: auto 1fr auto;
+  }
+
+  .chat-drawer {
+    position: relative;
+    grid-row: 1 / -1;
+    transform: none !important;
+    display: flex !important;
+    border-right: 1px solid var(--color-border);
+    z-index: auto;
+    width: var(--sidebar-width);
+  }
+
+  .chat-drawer.hidden {
+    transform: none !important;
+    display: flex !important;
+  }
+
+  .app-header {
+    grid-column: 2;
+  }
+
+  .chat-container {
+    grid-column: 2;
+    max-width: 960px;
+    width: 100%;
+    justify-self: center;
+  }
+
+  .app-footer {
+    grid-column: 2;
+    max-width: 960px;
+    width: 100%;
+    justify-self: center;
+  }
+
+  #drawer-overlay {
+    display: none !important;
+  }
+
+  #btn-toggle-drawer {
+    display: none;
+  }
+
+  .screen-settings {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: rgba(0,0,0,0.8);
+    z-index: 2000;
+  }
+
+  .screen-settings.hidden {
+    display: none;
+  }
+
+  .screen-settings .settings-header {
+    border-radius: 12px 12px 0 0;
+  }
+
+  .screen-settings .settings-container {
+    max-width: 680px;
+    width: 100%;
+    max-height: 80vh;
+    background-color: var(--color-bg-card);
+    border: 1px solid var(--color-border);
+    border-radius: 12px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .settings-nav {
+    width: 180px !important;
+  }
+
+  .settings-body {
+    padding: 20px;
+  }
+
+  .model-select-wrapper {
+    max-width: 280px;
+  }
 }
