@@ -22,11 +22,13 @@
         <span class="logo-text">coder</span>
       </div>
       
-      <!-- Model Selection Dropdown -->
+      <!-- Model Selection Trigger (opens searchable dialog) -->
       <div class="model-select-wrapper">
-        <select id="header-model-select" class="header-model-select" title="Choose AI Model">
-          <option value="">Loading models...</option>
-        </select>
+        <button id="header-model-trigger" class="header-model-trigger" title="Choose AI Model">
+          <svg class="model-trigger-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"></rect><path d="M8 20h8"></path><path d="M12 16v4"></path></svg>
+          <span id="header-model-label" class="header-model-label">Loading...</span>
+          <svg class="model-trigger-chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </button>
       </div>
       <div class="header-actions">
         <button id="btn-terminal" title="Terminal Manual" class="icon-button">
@@ -74,39 +76,98 @@
 
   </div>
 
-  <!-- Settings Slide-Over Modal -->
-  <div id="modal-settings" class="modal-overlay hidden">
-    <div class="modal-card">
-      <div class="modal-header">
-        <h3>Agent Configuration</h3>
-        <button class="close-button">&times;</button>
+  <!-- Settings Detailed Screen (full page, no dialog) -->
+  <section id="screen-settings" class="screen-settings hidden" aria-label="Agent Configuration">
+    <header class="settings-header">
+      <button id="btn-settings-back" class="settings-back-btn" title="Back" aria-label="Back">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+      </button>
+      <h2 class="settings-title">Agent Configuration</h2>
+      <button id="btn-settings-save" class="settings-save-btn" title="Save Changes">Save</button>
+    </header>
+
+    <div class="settings-body">
+      <!-- Section: API Connection -->
+      <section class="settings-section">
+        <div class="settings-section-header">
+          <span class="settings-section-eyebrow">Connection</span>
+          <h3 class="settings-section-title">API Provider</h3>
+          <p class="settings-section-desc">Point the agent to any OpenAI-compatible endpoint.</p>
+        </div>
+        <div class="settings-card">
+          <div class="form-group">
+            <label for="cfg-api-url">OpenAI Compatible API URL</label>
+            <input type="text" id="cfg-api-url" placeholder="https://api.openai.com/v1" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label for="cfg-api-key">API Key</label>
+            <input type="password" id="cfg-api-key" placeholder="Enter API Key" autocomplete="off">
+          </div>
+          <div class="form-group settings-form-group-last">
+            <div class="settings-label-row">
+              <label for="cfg-model">Active Model</label>
+              <button id="btn-pick-model" class="settings-link-btn" type="button">Browse all models &rarr;</button>
+            </div>
+            <input type="text" id="cfg-model" placeholder="qwen-plus" autocomplete="off">
+          </div>
+        </div>
+        <div class="settings-action-row">
+          <button id="btn-settings-test" class="secondary-button settings-block-btn">Test API Connection</button>
+          <span id="settings-test-status" class="settings-test-status"></span>
+        </div>
+      </section>
+
+      <!-- Section: Workspace -->
+      <section class="settings-section">
+        <div class="settings-section-header">
+          <span class="settings-section-eyebrow">Files</span>
+          <h3 class="settings-section-title">Workspace</h3>
+          <p class="settings-section-desc">The folder on disk the agent can read and modify.</p>
+        </div>
+        <div class="settings-card">
+          <div class="form-group settings-form-group-last">
+            <label for="cfg-workspace">Workspace Path</label>
+            <input type="text" id="cfg-workspace" placeholder="/absolute/path/to/workspace" autocomplete="off">
+            <span class="field-help">Make sure the backend process has read/write permissions for this path.</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Section: System Prompt -->
+      <section class="settings-section">
+        <div class="settings-section-header">
+          <span class="settings-section-eyebrow">Behavior</span>
+          <h3 class="settings-section-title">System Instructions</h3>
+          <p class="settings-section-desc">Tell the agent how to behave on every turn.</p>
+        </div>
+        <div class="settings-card">
+          <div class="form-group settings-form-group-last">
+            <label for="cfg-system-prompt">System Prompt</label>
+            <textarea id="cfg-system-prompt" rows="8" placeholder="System prompt details..."></textarea>
+          </div>
+        </div>
+      </section>
+    </div>
+  </section>
+
+  <!-- Model Picker Dialog (searchable) -->
+  <div id="modal-model-picker" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-label="Choose a model">
+    <div class="modal-card model-picker-card">
+      <div class="modal-header model-picker-header">
+        <h3>Select Model</h3>
+        <button class="close-button" data-close-model-picker>&times;</button>
       </div>
-      <div class="modal-body">
-        <div class="form-group">
-          <label for="cfg-api-url">OpenAI Compatible API URL</label>
-          <input type="text" id="cfg-api-url" placeholder="https://api.openai.com/v1">
-        </div>
-        <div class="form-group">
-          <label for="cfg-api-key">API Key</label>
-          <input type="password" id="cfg-api-key" placeholder="Enter API Key">
-        </div>
-        <div class="form-group">
-          <label for="cfg-model">Model Name</label>
-          <input type="text" id="cfg-model" placeholder="qwen-plus">
-        </div>
-        <div class="form-group">
-          <label for="cfg-workspace">Workspace Path</label>
-          <input type="text" id="cfg-workspace" placeholder="/absolute/path/to/workspace">
-          <span class="field-help">Make sure the backend process has read/write permissions for this path.</span>
-        </div>
-        <div class="form-group">
-          <label for="cfg-system-prompt">System Instructions</label>
-          <textarea id="cfg-system-prompt" rows="5" placeholder="System prompt details..."></textarea>
-        </div>
+      <div class="model-picker-search-row">
+        <svg class="model-picker-search-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+        <input type="text" id="model-picker-search" class="model-picker-search" placeholder="Search models..." autocomplete="off" />
+        <button id="model-picker-clear" class="model-picker-clear hidden" type="button" aria-label="Clear search">&times;</button>
       </div>
-      <div class="modal-footer">
-        <button id="btn-settings-test" class="secondary-button">Test API Connection</button>
-        <button id="btn-settings-save" class="primary-button">Save Changes</button>
+      <div class="model-picker-meta">
+        <span id="model-picker-count">0 models</span>
+        <span id="model-picker-active" class="model-picker-active"></span>
+      </div>
+      <div id="model-picker-list" class="model-picker-list" role="listbox">
+        <div class="model-picker-empty">Loading models...</div>
       </div>
     </div>
   </div>

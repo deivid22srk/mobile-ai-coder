@@ -42,7 +42,8 @@ The interface follows the **Claude Code** dark theme with coral accent (`#C4622D
 | 🔧 Tool Cards | Collapsible cards showing tool execution with live console output |
 | 🧠 Thinking | Real-time thought process modal with token-by-token streaming |
 | 📂 File Explorer | Split-view file manager with built-in code editor |
-| ⚙️ Settings | Configurable API URL, key, model, workspace path, and system prompt |
+| ⚙️ Settings | Full-page configuration screen (not a dialog) with grouped sections |
+| 🔍 Model Picker | Searchable dialog with fuzzy model search and live active-model highlight |
 | 💻 Terminal | Manual command runner for direct shell access |
 
 ### Quick Start
@@ -73,36 +74,37 @@ On first launch, the app creates a `config.json` with defaults:
 | `workspacePath` | `./workspace` | Sandboxed directory for file operations |
 | `systemPrompt` | *(built-in)* | Agent system instructions |
 
-You can change all settings via the ⚙️ gear icon in the app, or by changing the model directly from the header dropdown.
+You can change all settings via the ⚙️ gear icon — which now opens a **full configuration screen** (not a dialog) with grouped sections for *API Provider*, *Workspace* and *System Instructions*. The header model trigger opens a **searchable model picker dialog** where you can type to filter through every model exposed by your provider.
 
 ### Architecture
 
 ```
-┌─────────────────────────────────────────────┐
-│           Mobile Browser (Frontend)         │
-│  ┌───────────┬──────────┬────────────────┐  │
-│  │ Chat UI   │ Explorer │ Terminal Modal │  │
-│  └─────┬─────┴────┬─────┴───────┬────────┘  │
-│        │ SSE Stream│   REST API  │           │
-└────────┼──────────┼─────────────┼───────────┘
-         │          │             │
-┌────────┼──────────┼─────────────┼───────────┐
-│        ▼          ▼             ▼            │
-│  ┌──────────────────────────────────────┐   │
-│  │         Express Server (Backend)     │   │
-│  │  ┌────────┐ ┌────────┐ ┌──────────┐ │   │
-│  │  │ /chat  │ │ /files │ │ /models  │ │   │
-│  │  │  SSE   │ │  REST  │ │  REST    │ │   │
-│  │  └───┬────┘ └───┬────┘ └────┬─────┘ │   │
-│  │      │          │           │        │   │
-│  │      ▼          ▼           ▼        │   │
-│  │  ┌────────┐ ┌────────┐ ┌────────┐   │   │
-│  │  │  LLM   │ │ Local  │ │  LLM   │   │   │
-│  │  │  API   │ │  FS    │ │  API   │   │   │
-│  │  └────────┘ └────────┘ └────────┘   │   │
-│  └──────────────────────────────────────┘   │
-│              Node.js Server                 │
-└─────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────┐
+│             Mobile Browser (Frontend)              │
+│  ┌───────────┬──────────┬─────────────┬─────────┐   │
+│  │ Chat UI   │ Explorer │  Settings   │ Model   │   │
+│  │           │  Modal   │ Full Screen │ Picker  │   │
+│  └─────┬─────┴────┬─────┴──────┬──────┴────┬────┘   │
+│        │ SSE Stream│   REST API  │   REST   │        │
+└────────┼──────────┼─────────────┼──────────┼────────┘
+         │          │             │          │
+┌────────┼──────────┼─────────────┼──────────┼────────┐
+│        ▼          ▼             ▼          ▼        │
+│  ┌──────────────────────────────────────────────┐  │
+│  │          Express Server (Backend)            │  │
+│  │  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ │  │
+│  │  │ /chat  │ │ /files │ │/settings│ │/models │ │  │
+│  │  │  SSE   │ │  REST  │ │  REST   │ │  REST  │ │  │
+│  │  └───┬────┘ └───┬────┘ └────┬───┘ └───┬────┘ │  │
+│  │      │          │           │         │      │  │
+│  │      ▼          ▼           ▼         ▼      │  │
+│  │  ┌────────┐ ┌────────┐  ┌────────┐ ┌────────┐ │  │
+│  │  │  LLM   │ │ Local  │  │ Config │ │  LLM   │ │  │
+│  │  │  API   │ │  FS    │  │  JSON  │ │  API   │ │  │
+│  │  └────────┘ └────────┘  └────────┘ └────────┘ │  │
+│  └──────────────────────────────────────────────┘  │
+│                   Node.js Server                   │
+└────────────────────────────────────────────────────┘
 ```
 
 ### Available Tools
@@ -124,6 +126,8 @@ The AI agent has access to these workspace tools:
 - **Background Process Management** — Server commands (like `npm run dev`) auto-detect and run in background
 - **Path Traversal Protection** — All file operations are sandboxed to the workspace directory
 - **Client Disconnect Handling** — Aborts API calls when the user closes the browser tab
+- **Settings as a Screen, not a Dialog** — The configuration UI is a dedicated full-page experience with grouped sections and inline feedback
+- **Searchable Model Picker** — A focused dialog with a fuzzy text filter, current-model highlight and zero-friction keyboard escape
 
 ### Tech Stack
 
@@ -178,7 +182,7 @@ Na primeira execução, o app cria um `config.json` com valores padrão:
 | `workspacePath` | `./workspace` | Diretório isolado para operações de arquivo |
 | `systemPrompt` | *(embutido)* | Instruções de sistema do agente |
 
-Você pode alterar todas as configurações pelo ícone ⚙️ no app, ou trocar o modelo diretamente pelo dropdown no header.
+Você pode alterar todas as configurações pelo ícone ⚙️ — que agora abre uma **tela de configuração completa** (não um diálogo) com seções agrupadas para *Provedor de API*, *Workspace* e *Instruções de Sistema*. O gatilho de modelo no header abre um **diálogo de seleção de modelo com busca**, onde você pode digitar para filtrar entre todos os modelos expostos pelo seu provedor.
 
 ### Ferramentas Disponíveis
 
@@ -199,6 +203,8 @@ O agente de IA tem acesso a estas ferramentas no workspace:
 - **Gerenciamento de Processos em Background** — Comandos de servidor (como `npm run dev`) são auto-detectados e rodam em segundo plano
 - **Proteção contra Path Traversal** — Todas as operações de arquivo são restritas ao diretório workspace
 - **Tratamento de Desconexão** — Aborta chamadas à API quando o usuário fecha a aba do navegador
+- **Configurações como Tela, não Diálogo** — UI de configuração dedicada em página cheia, com seções agrupadas e feedback inline
+- **Seletor de Modelo com Busca** — Diálogo focado com filtro de texto fuzzy, destaque do modelo ativo e tecla ESC para fechar
 
 ### Paleta de Cores (Tema Claude Code)
 

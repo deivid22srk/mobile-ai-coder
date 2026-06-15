@@ -7,16 +7,25 @@ const agentStatusBar = document.getElementById('agent-status-bar');
 const statusText = document.getElementById('status-text');
 
 // Modals
-const modalSettings = document.getElementById('modal-settings');
+const screenSettings = document.getElementById('screen-settings');
+const modalModelPicker = document.getElementById('modal-model-picker');
 const modalExplorer = document.getElementById('modal-explorer');
 const modalTerminal = document.getElementById('modal-terminal');
 const modalThought = document.getElementById('modal-thought');
 
 // Menu buttons
 const btnSettings = document.getElementById('btn-settings');
+const btnSettingsBack = document.getElementById('btn-settings-back');
 const btnExplorer = document.getElementById('btn-explorer');
 const btnTerminal = document.getElementById('btn-terminal');
-const headerModelSelect = document.getElementById('header-model-select');
+const headerModelTrigger = document.getElementById('header-model-trigger');
+const headerModelLabel = document.getElementById('header-model-label');
+const btnPickModel = document.getElementById('btn-pick-model');
+const modelPickerSearch = document.getElementById('model-picker-search');
+const modelPickerClear = document.getElementById('model-picker-clear');
+const modelPickerList = document.getElementById('model-picker-list');
+const modelPickerCount = document.getElementById('model-picker-count');
+const modelPickerActive = document.getElementById('model-picker-active');
 
 // Configuration fields
 const cfgApiUrl = document.getElementById('cfg-api-url');
@@ -26,6 +35,7 @@ const cfgWorkspace = document.getElementById('cfg-workspace');
 const cfgSystemPrompt = document.getElementById('cfg-system-prompt');
 const btnSettingsSave = document.getElementById('btn-settings-save');
 const btnSettingsTest = document.getElementById('btn-settings-test');
+const settingsTestStatus = document.getElementById('settings-test-status');
 
 // File Explorer Panel
 const btnRefreshFiles = document.getElementById('btn-refresh-files');
@@ -43,6 +53,8 @@ const terminalStdout = document.getElementById('terminal-stdout');
 let conversationHistory = [];
 let appConfig = null;
 let activeEditorFile = null;
+let availableModels = [];
+let modelPickerSelected = null;
 
 // Initialize
 async function init() {
@@ -74,18 +86,57 @@ async function loadSettings() {
 // Event Listeners Setup
 function setupEventListeners() {
   // Modal toggle actions
-  btnSettings.addEventListener('click', () => toggleModal(modalSettings, true));
+  btnSettings.addEventListener('click', openSettingsScreen);
+  btnSettingsBack.addEventListener('click', closeSettingsScreen);
   btnExplorer.addEventListener('click', () => {
     toggleModal(modalExplorer, true);
     loadWorkspaceFiles();
   });
   btnTerminal.addEventListener('click', () => toggleModal(modalTerminal, true));
 
+  // Header model trigger opens the searchable model picker
+  headerModelTrigger.addEventListener('click', openModelPicker);
+  btnPickModel.addEventListener('click', openModelPicker);
+  modelPickerSearch.addEventListener('input', () => {
+    renderModelPickerList(modelPickerSearch.value);
+    if (modelPickerSearch.value) {
+      modelPickerClear.classList.remove('hidden');
+    } else {
+      modelPickerClear.classList.add('hidden');
+    }
+  });
+  modelPickerClear.addEventListener('click', () => {
+    modelPickerSearch.value = '';
+    modelPickerSearch.focus();
+    modelPickerClear.classList.add('hidden');
+    renderModelPickerList('');
+  });
+  modalModelPicker.addEventListener('click', (e) => {
+    if (e.target === modalModelPicker) {
+      toggleModal(modalModelPicker, false);
+    }
+  });
+  document.querySelectorAll('[data-close-model-picker]').forEach(btn => {
+    btn.addEventListener('click', () => toggleModal(modalModelPicker, false));
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !modalModelPicker.classList.contains('hidden')) {
+      toggleModal(modalModelPicker, false);
+    }
+  });
+
   // Close buttons inside modals
   document.querySelectorAll('.close-button').forEach(btn => {
     btn.addEventListener('click', (e) => {
       const overlay = e.target.closest('.modal-overlay');
-      toggleModal(overlay, false);
+      if (overlay) {
+        toggleModal(overlay, false);
+        return;
+      }
+      // Also handle the settings "back" arrow which is styled like a close-button sibling
+      if (e.target.closest('.settings-header')) {
+        closeSettingsScreen();
+      }
     });
   });
 
@@ -130,23 +181,6 @@ function setupEventListeners() {
     }
   });
 
-  // Header model dropdown change
-  headerModelSelect.addEventListener('change', async () => {
-    const selectedModel = headerModelSelect.value;
-    if (!selectedModel || !appConfig) return;
-    appConfig.model = selectedModel;
-    cfgModel.value = selectedModel;
-    // Save to backend silently
-    try {
-      await fetch('/api/settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: selectedModel })
-      });
-    } catch (err) {
-      console.error('Failed to save model selection:', err);
-    }
-  });
 }
 
 // Helper to toggle modals
@@ -166,41 +200,155 @@ function autoResizeTextarea(textarea) {
   });
 }
 
-// Load models from API and populate header dropdown
+// Load models from API and store in state
 async function loadApiModels() {
   try {
     const res = await fetch('/api/models');
     const data = await res.json();
-    const models = data.models || [];
+    availableModels = Array.isArray(data.models) ? data.models : [];
 
-    headerModelSelect.innerHTML = '';
-
-    if (models.length === 0) {
-      const opt = document.createElement('option');
-      opt.value = appConfig?.model || 'qwen-plus';
-      opt.textContent = appConfig?.model || 'qwen-plus';
-      headerModelSelect.appendChild(opt);
-      return;
-    }
-
-    // Ensure current model is in the list
+    // Ensure current model is in the list (if API didn't include it)
     const currentModel = appConfig?.model || '';
-    if (currentModel && !models.includes(currentModel)) {
-      models.unshift(currentModel);
+    if (currentModel && !availableModels.includes(currentModel)) {
+      availableModels.unshift(currentModel);
     }
 
-    models.forEach(modelId => {
-      const opt = document.createElement('option');
-      opt.value = modelId;
-      opt.textContent = modelId;
-      if (modelId === currentModel) {
-        opt.selected = true;
-      }
-      headerModelSelect.appendChild(opt);
-    });
+    if (availableModels.length === 0) {
+      const fallback = appConfig?.model || 'qwen-plus';
+      availableModels = [fallback];
+    }
+
+    updateHeaderModelLabel();
   } catch (err) {
     console.error('Failed to load models:', err);
-    headerModelSelect.innerHTML = `<option value="${appConfig?.model || 'qwen-plus'}">${appConfig?.model || 'qwen-plus'}</option>`;
+    const fallback = appConfig?.model || 'qwen-plus';
+    availableModels = [fallback];
+    updateHeaderModelLabel();
+  }
+}
+
+function updateHeaderModelLabel() {
+  const model = appConfig?.model || availableModels[0] || 'qwen-plus';
+  if (headerModelLabel) {
+    headerModelLabel.textContent = model;
+    headerModelLabel.title = model;
+  }
+}
+
+// Settings screen open/close (acts like a full page, not a dialog)
+function openSettingsScreen() {
+  if (!appConfig) return;
+  // Make sure the latest values are reflected in the form
+  cfgApiUrl.value = appConfig.apiUrl || '';
+  cfgApiKey.value = appConfig.apiKey || '';
+  cfgModel.value = appConfig.model || '';
+  cfgWorkspace.value = appConfig.workspacePath || '';
+  cfgSystemPrompt.value = appConfig.systemPrompt || '';
+  if (settingsTestStatus) {
+    settingsTestStatus.textContent = '';
+    settingsTestStatus.className = 'settings-test-status';
+  }
+  screenSettings.classList.remove('hidden');
+  // Smooth scroll to top
+  const body = screenSettings.querySelector('.settings-body');
+  if (body) body.scrollTop = 0;
+}
+
+function closeSettingsScreen() {
+  screenSettings.classList.add('hidden');
+}
+
+// Model picker open/close
+function openModelPicker() {
+  if (!availableModels || availableModels.length === 0) {
+    // Try to reload
+    loadApiModels().then(() => {
+      if (availableModels.length > 0) {
+        reallyOpenModelPicker();
+      }
+    });
+    return;
+  }
+  reallyOpenModelPicker();
+}
+
+function reallyOpenModelPicker() {
+  modelPickerSearch.value = '';
+  modelPickerClear.classList.add('hidden');
+  renderModelPickerList('');
+  toggleModal(modalModelPicker, true);
+  setTimeout(() => modelPickerSearch.focus(), 50);
+}
+
+function renderModelPickerList(filter) {
+  const query = (filter || '').trim().toLowerCase();
+  const currentModel = appConfig?.model || '';
+
+  let filtered = availableModels;
+  if (query) {
+    filtered = availableModels.filter(m => m.toLowerCase().includes(query));
+  }
+
+  modelPickerList.innerHTML = '';
+  modelPickerCount.textContent = `${filtered.length} model${filtered.length === 1 ? '' : 's'}`;
+  if (currentModel) {
+    modelPickerActive.textContent = `Active: ${currentModel}`;
+  } else {
+    modelPickerActive.textContent = '';
+  }
+
+  if (filtered.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'model-picker-empty';
+    empty.textContent = query
+      ? `No models match "${filter}"`
+      : 'No models available. Check your API URL in settings.';
+    modelPickerList.appendChild(empty);
+    return;
+  }
+
+  filtered.forEach(modelId => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'model-picker-item';
+    item.setAttribute('role', 'option');
+    if (modelId === currentModel) {
+      item.classList.add('is-active');
+    }
+    item.dataset.model = modelId;
+
+    const name = document.createElement('span');
+    name.className = 'model-picker-item-name';
+    name.textContent = modelId;
+
+    const check = document.createElement('span');
+    check.className = 'model-picker-item-check';
+    check.textContent = '\u2713';
+
+    item.appendChild(name);
+    item.appendChild(check);
+
+    item.addEventListener('click', () => selectModel(modelId));
+    modelPickerList.appendChild(item);
+  });
+}
+
+async function selectModel(modelId) {
+  if (!modelId || !appConfig) return;
+  appConfig.model = modelId;
+  cfgModel.value = modelId;
+  updateHeaderModelLabel();
+  toggleModal(modalModelPicker, false);
+  renderModelPickerList(modelPickerSearch.value);
+  // Save to backend silently
+  try {
+    await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: modelId })
+    });
+  } catch (err) {
+    console.error('Failed to save model selection:', err);
   }
 }
 
@@ -227,25 +375,43 @@ async function saveSettings() {
     if (data.success) {
       appConfig = data.config;
       lblWorkspace.textContent = appConfig.workspacePath;
-      headerModelSelect.value = appConfig.model;
-      toggleModal(modalSettings, false);
+      updateHeaderModelLabel();
       loadApiModels(); // Refresh models list in case API URL changed
-      alert('Settings saved successfully.');
+      if (settingsTestStatus) {
+        settingsTestStatus.textContent = '';
+        settingsTestStatus.className = 'settings-test-status';
+      }
+      flashSettingsSave('Settings saved', 'success');
     } else {
-      alert('Error saving settings: ' + data.error);
+      flashSettingsSave('Error saving: ' + data.error, 'error');
     }
   } catch (err) {
-    alert('Failed to connect to backend.');
+    flashSettingsSave('Failed to connect to backend.', 'error');
   } finally {
     btnSettingsSave.disabled = false;
-    btnSettingsSave.textContent = 'Save Changes';
+    btnSettingsSave.textContent = 'Save';
   }
+}
+
+function flashSettingsSave(message, kind) {
+  if (!btnSettingsSave) return;
+  const original = btnSettingsSave.textContent;
+  btnSettingsSave.textContent = message;
+  btnSettingsSave.classList.add(kind === 'success' ? 'is-success' : 'is-error');
+  setTimeout(() => {
+    btnSettingsSave.textContent = 'Save';
+    btnSettingsSave.classList.remove('is-success', 'is-error');
+  }, 1600);
 }
 
 // Test API Connection
 async function testApiConnection() {
   btnSettingsTest.disabled = true;
   btnSettingsTest.textContent = 'Testing...';
+  if (settingsTestStatus) {
+    settingsTestStatus.textContent = '';
+    settingsTestStatus.className = 'settings-test-status';
+  }
 
   try {
     const testPayload = {
@@ -266,17 +432,23 @@ async function testApiConnection() {
     if (res.ok) {
       const data = await res.json();
       const text = data.choices?.[0]?.message?.content || 'Empty response';
-      alert(`Connection Successful!\nLLM responded: "${text}"`);
+      showTestStatus(`Connected — "${text}"`, 'success');
     } else {
       const errText = await res.text();
-      alert(`Connection Failed!\nStatus: ${res.status}\nError: ${errText}`);
+      showTestStatus(`Failed (${res.status}): ${errText.slice(0, 120)}`, 'error');
     }
   } catch (err) {
-    alert(`Connection Failed!\nNetwork Error: ${err.message}`);
+    showTestStatus(`Network error: ${err.message}`, 'error');
   } finally {
     btnSettingsTest.disabled = false;
     btnSettingsTest.textContent = 'Test API Connection';
   }
+}
+
+function showTestStatus(message, kind) {
+  if (!settingsTestStatus) return;
+  settingsTestStatus.textContent = message;
+  settingsTestStatus.className = `settings-test-status is-${kind}`;
 }
 
 // Load files list into workspace explorer tree
