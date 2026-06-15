@@ -1181,6 +1181,13 @@ async function runAgentExecution(chatId, clientMessages) {
       broadcastEvent('error', { content: err.message });
     } finally {
       execution.done = true;
+      for (const res of execution.clients) {
+        try {
+          res.end();
+        } catch (err) {
+          console.error("Error closing client response:", err);
+        }
+      }
       activeExecutions.delete(chatId);
     }
   })();
