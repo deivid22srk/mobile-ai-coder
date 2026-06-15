@@ -17,7 +17,11 @@
     
     <!-- Top Header -->
     <header class="app-header">
-      <div class="logo">
+      <div class="header-left" style="display: flex; align-items: center; gap: 8px;">
+        <button id="btn-toggle-drawer" title="Chat History" class="icon-button">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+        </button>
+        <div class="logo">
         <span class="logo-asterisk">*</span>
         <span class="logo-text">coder</span>
       </div>
@@ -42,6 +46,18 @@
         </button>
       </div>
     </header>
+
+    <!-- Chat History Drawer -->
+    <aside id="chat-drawer" class="chat-drawer hidden">
+      <div class="drawer-header">
+        <h3>Chats</h3>
+        <button id="btn-new-chat" class="mini-btn primary-btn-style">+ New Chat</button>
+      </div>
+      <div id="chats-list" class="drawer-list">
+        <!-- Chats will be rendered here -->
+      </div>
+    </aside>
+    <div id="drawer-overlay" class="modal-overlay hidden" style="z-index: 150; background-color: rgba(0,0,0,0.5);"></div>
 
     <!-- Main Workspace Area -->
     <main class="chat-container">
@@ -86,9 +102,17 @@
       <button id="btn-settings-save" class="settings-save-btn" title="Save Changes">Save</button>
     </header>
 
-    <div class="settings-body">
+    <div class="settings-container" style="display: flex; flex: 1; overflow: hidden;">
+      <nav class="settings-nav" style="width: 200px; border-right: 1px solid var(--color-border); padding: 16px; display: flex; flex-direction: column; gap: 8px;">
+        <button class="settings-nav-item active" data-category="llm">LLM Config</button>
+        <button class="settings-nav-item" data-category="github">GitHub</button>
+        <button class="settings-nav-item" data-category="general">General</button>
+        <button class="settings-nav-item" data-category="tools">Tools</button>
+      </nav>
+
+      <div class="settings-body" style="flex: 1; overflow-y: auto; padding: 16px;">
       <!-- Section: API Connection -->
-      <section class="settings-section">
+      <section id="settings-cat-llm" class="settings-section">
         <div class="settings-section-header">
           <span class="settings-section-eyebrow">Connection</span>
           <h3 class="settings-section-title">API Provider</h3>
@@ -117,8 +141,8 @@
         </div>
       </section>
 
-      <!-- Section: Workspace -->
-      <section class="settings-section">
+      <!-- Section: Workspace (General) -->
+      <section id="settings-cat-general" class="settings-section hidden">
         <div class="settings-section-header">
           <span class="settings-section-eyebrow">Files</span>
           <h3 class="settings-section-title">Workspace</h3>
@@ -133,8 +157,8 @@
         </div>
       </section>
 
-      <!-- Section: System Prompt -->
-      <section class="settings-section">
+      <!-- Section: System Prompt (Tools) -->
+      <section id="settings-cat-tools" class="settings-section hidden">
         <div class="settings-section-header">
           <span class="settings-section-eyebrow">Behavior</span>
           <h3 class="settings-section-title">System Instructions</h3>
@@ -149,7 +173,7 @@
       </section>
 
       <!-- Section: GitHub Integration -->
-      <section class="settings-section">
+      <section id="settings-cat-github" class="settings-section hidden">
         <div class="settings-section-header">
           <span class="settings-section-eyebrow">Account</span>
           <h3 class="settings-section-title">GitHub Integration</h3>
@@ -180,6 +204,7 @@
           <span id="github-status-message" class="settings-test-status"></span>
         </div>
       </section>
+      </div>
     </div>
   </section>
 
@@ -263,6 +288,6 @@
 
   <!-- Thinking Process Modal (removed) -->
 
-<script src="app.js"></script>
+  <script src="bundle.js"></script>
 </body>
 </html>

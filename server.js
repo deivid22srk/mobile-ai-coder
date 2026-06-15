@@ -3,6 +3,7 @@ const cors = require('cors');
 const fs = require('fs').promises;
 const path = require('path');
 const { exec } = require('child_process');
+const Database = require('better-sqlite3');
 
 const app = express();
 app.use(cors());
@@ -10,6 +11,30 @@ app.use(express.json());
 
 // Path to store config
 const CONFIG_FILE = path.join(__dirname, 'config.json');
+const DB_FILE = path.join(__dirname, 'database.sqlite');
+
+// Initialize Database
+const db = new Database(DB_FILE);
+db.pragma('journal_mode = WAL');
+
+// Create tables
+db.exec(`
+  CREATE TABLE IF NOT EXISTS chats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chatId INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    type TEXT NOT NULL DEFAULT 'text',
+    createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (chatId) REFERENCES chats(id) ON DELETE CASCADE
+  );
+`);
 
 // Default configurations
 const DEFAULT_CONFIG = {
@@ -296,6 +321,47 @@ const toolsDefinition = [
 
 // Serve static assets from public folder
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Chat History Endpoints
+app.get('/api/chats', (req, res) => {
+  try {
+    const chats = db.prepare('SELECT * FROM chats ORDER BY createdAt DESC').all();
+    res.json(chats);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/chats', (req, res) => {
+  try {
+    const { title } = req.body;
+    const result = db.prepare('INSERT INTO chats (title) VALUES (?)').run(title || 'New Chat');
+    const newChat = db.prepare('SELECT * FROM chats WHERE id = ?').get(result.lastInsertRowid);
+    res.json(newChat);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/chats/:id', (req, res) => {
+  try {
+    const chat = db.prepare('SELECT * FROM chats WHERE id = ?').get(req.params.id);
+    if (!chat) return res.status(404).json({ error: 'Chat not found' });
+    const messages = db.prepare('SELECT * FROM messages WHERE chatId = ? ORDER BY createdAt ASC').all(req.params.id);
+    res.json({ ...chat, messages });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/chats/:id', (req, res) => {
+  try {
+    db.prepare('DELETE FROM chats WHERE id = ?').run(req.params.id);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // Settings Endpoints
 app.get('/api/settings', async (req, res) => {
@@ -604,6 +670,39 @@ function executeCommandWithStreaming(command, cwd, id, sendEvent, timeoutSec = 1
 app.post('/api/chat', async (req, res) => {
   const config = await getConfig();
   const clientMessages = req.body.messages || [];
+  let chatId = req.body.chatId;
+
+  // Persistence helpers
+  const saveMessage = (role, content, type = 'text') => {
+    if (!chatId) return;
+    try {
+      db.prepare('INSERT INTO messages (chatId, role, content, type) VALUES (?, ?, ?, ?)').run(
+        chatId, role, typeof content === 'string' ? content : JSON.stringify(content), type
+      );
+    } catch (err) {
+      console.error("Failed to persist message:", err);
+    }
+  };
+
+  // If this is the first message in a new chat, we might need to create it
+  if (!chatId && clientMessages.length > 0) {
+    try {
+      const firstUserMsg = clientMessages.find(m => m.role === 'user');
+      const title = firstUserMsg ? (firstUserMsg.content.slice(0, 50) + (firstUserMsg.content.length > 50 ? '...' : '')) : 'New Chat';
+      const result = db.prepare('INSERT INTO chats (title) VALUES (?)').run(title);
+      chatId = result.lastInsertRowid;
+    } catch (err) {
+      console.error("Failed to create chat for persistence:", err);
+    }
+  }
+
+  // Persist the last user message if it's new
+  if (chatId && clientMessages.length > 0) {
+    const lastMsg = clientMessages[clientMessages.length - 1];
+    if (lastMsg.role === 'user') {
+      saveMessage('user', lastMsg.content);
+    }
+  }
 
   // Setup Server-Sent Events headers
   res.setHeader('Content-Type', 'text/event-stream');
@@ -966,6 +1065,10 @@ app.post('/api/chat', async (req, res) => {
             name: name,
             content: toolOutput
           });
+
+          // Persist tool call and output
+          saveMessage('assistant', `Call tool: ${name} with args ${JSON.stringify(args)}`, 'tool_call');
+          saveMessage('tool', toolOutput, 'tool_output');
         }
 
         // Loop continues to feed tool outputs back to LLM
@@ -978,7 +1081,12 @@ app.post('/api/chat', async (req, res) => {
       break;
     }
 
-    sendEvent('done');
+    sendEvent('done', { chatId });
+    // Persist final assistant message
+    const finalAssistant = messages[messages.length - 1];
+    if (finalAssistant && finalAssistant.role === 'assistant' && !finalAssistant.tool_calls) {
+      saveMessage('assistant', finalAssistant.content);
+    }
   } catch (err) {
     console.error("Chat handler error:", err);
     sendEvent('error', { content: err.message });
