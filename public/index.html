@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Claude Code Mobile Agent</title>
+  <!-- Google Fonts: Outfit for UI, JetBrains Mono for Code -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;1,400&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- App Shell -->
+  <div class="app-container">
+    
+    <!-- Top Header -->
+    <header class="app-header">
+      <div class="logo">
+        <span class="logo-asterisk">*</span>
+        <span class="logo-text">coder</span>
+      </div>
+      
+      <!-- Model Selection Dropdown -->
+      <div class="model-select-wrapper">
+        <select id="header-model-select" class="header-model-select" title="Choose AI Model">
+          <option value="">Loading models...</option>
+        </select>
+      </div>
+      <div class="header-actions">
+        <button id="btn-terminal" title="Terminal Manual" class="icon-button">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"></polyline><line x1="12" y1="19" x2="20" y2="19"></line></svg>
+        </button>
+        <button id="btn-explorer" title="Workspace Files" class="icon-button">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+        </button>
+        <button id="btn-settings" title="Settings" class="icon-button">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Workspace Area -->
+    <main class="chat-container">
+      <div id="chat-messages" class="messages-list">
+        <!-- System Welcome Message -->
+        <div class="message system-message">
+          <div class="msg-content">
+            <p><strong>Welcome to Claude Code Mobile!</strong></p>
+            <p>I can edit files, list files, clone repositories, and run shell commands in the workspace.</p>
+            <p class="workspace-label-text">Current workspace: <span id="lbl-workspace" class="code-span">Loading...</span></p>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Live Agent Status (e.g. Doodling, Writing, Thinking...) -->
+      <div id="agent-status-bar" class="status-bar hidden">
+        <span class="status-spinner"></span>
+        <span id="status-text">Thinking...</span>
+      </div>
+    </main>
+
+    <!-- Bottom Input Panel -->
+    <footer class="app-footer">
+      <div class="input-row">
+        <span class="prompt-arrow">&gt;</span>
+        <textarea id="chat-input" placeholder="Type a command or ask a question..." rows="1"></textarea>
+        <button id="btn-send" class="primary-button" title="Send message">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+        </button>
+      </div>
+    </footer>
+
+  </div>
+
+  <!-- Settings Slide-Over Modal -->
+  <div id="modal-settings" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Agent Configuration</h3>
+        <button class="close-button">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="cfg-api-url">OpenAI Compatible API URL</label>
+          <input type="text" id="cfg-api-url" placeholder="https://api.openai.com/v1">
+        </div>
+        <div class="form-group">
+          <label for="cfg-api-key">API Key</label>
+          <input type="password" id="cfg-api-key" placeholder="Enter API Key">
+        </div>
+        <div class="form-group">
+          <label for="cfg-model">Model Name</label>
+          <input type="text" id="cfg-model" placeholder="qwen-plus">
+        </div>
+        <div class="form-group">
+          <label for="cfg-workspace">Workspace Path</label>
+          <input type="text" id="cfg-workspace" placeholder="/absolute/path/to/workspace">
+          <span class="field-help">Make sure the backend process has read/write permissions for this path.</span>
+        </div>
+        <div class="form-group">
+          <label for="cfg-system-prompt">System Instructions</label>
+          <textarea id="cfg-system-prompt" rows="5" placeholder="System prompt details..."></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-settings-test" class="secondary-button">Test API Connection</button>
+        <button id="btn-settings-save" class="primary-button">Save Changes</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Workspace Files Explorer Modal -->
+  <div id="modal-explorer" class="modal-overlay hidden">
+    <div class="modal-card full-screen">
+      <div class="modal-header">
+        <h3>Workspace File Manager</h3>
+        <button class="close-button">&times;</button>
+      </div>
+      <div class="modal-body split-view">
+        <!-- Tree View -->
+        <div class="file-tree-panel">
+          <div class="panel-header">
+            <h4>Files</h4>
+            <button id="btn-refresh-files" class="mini-btn">Refresh</button>
+          </div>
+          <div id="file-tree-container" class="tree-container">
+            <span class="loading-indicator">Reading workspace files...</span>
+          </div>
+        </div>
+        
+        <!-- Viewer/Editor Panel -->
+        <div class="file-editor-panel">
+          <div class="editor-header">
+            <span id="editor-file-title" class="file-title">No file selected</span>
+            <button id="btn-save-file" class="mini-btn primary-btn-style hidden">Save File</button>
+          </div>
+          <div class="editor-body">
+            <textarea id="editor-textarea" readonly placeholder="Select a file from the tree explorer on the left to read or edit it here."></textarea>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Manual Command Terminal Modal -->
+  <div id="modal-terminal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Manual Workspace Terminal</h3>
+        <button class="close-button">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="term-command">Execute Bash Command</label>
+          <div class="terminal-input-row">
+            <span class="prompt-arrow">&gt;</span>
+            <input type="text" id="term-command" placeholder="npm run build, git status, ls -la...">
+            <button id="btn-run-term" class="primary-button">Run</button>
+          </div>
+        </div>
+        <div class="terminal-output-container">
+          <pre id="terminal-stdout" class="terminal-output">Terminal output will appear here...</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Thinking Process Modal -->
+  <div id="modal-thought" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>🧠 Pensamento do Agente</h3>
+        <button class="close-button">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="terminal-output-container" style="height: 400px; margin-top: 0;">
+          <pre id="thought-content-pre" class="terminal-output" style="color: #A0AEC0; font-family: var(--font-mono); font-size: 0.85rem; height: 100%; overflow-y: auto; white-space: pre-wrap; margin: 0;">Aguardando pensamentos...</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
