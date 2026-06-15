@@ -1433,10 +1433,37 @@ textarea#chat-input {
   border-radius: 8px;
   cursor: pointer;
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  align-items: center;
+  gap: 8px;
   transition: background-color 0.2s;
   margin-bottom: 4px;
+}
+
+.drawer-item:hover {
+  background-color: var(--color-btn-sec);
+}
+
+.drawer-delete-btn {
+  background: none;
+  border: none;
+  color: var(--color-text-sub);
+  font-size: 1.3rem;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 4px;
+  line-height: 1;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.2s, color 0.2s;
+}
+
+.drawer-item:hover .drawer-delete-btn {
+  opacity: 1;
+}
+
+.drawer-delete-btn:hover {
+  color: #E53E3E;
+  background-color: rgba(229,62,62,0.1);
 }
 
 .drawer-item:hover {

@@ -1141,8 +1141,13 @@ function renderChatsList(chats: Chat[]) {
   }
 
   chats.forEach(chat => {
-    const item = document.createElement('button');
+    const item = document.createElement('div');
     item.className = `drawer-item ${activeChatId === chat.id ? 'active' : ''}`;
+
+    const info = document.createElement('div');
+    info.style.flex = '1';
+    info.style.minWidth = '0';
+    info.style.cursor = 'pointer';
 
     const title = document.createElement('span');
     title.className = 'drawer-item-title';
@@ -1152,16 +1157,42 @@ function renderChatsList(chats: Chat[]) {
     date.className = 'drawer-item-date';
     date.textContent = new Date(chat.createdAt).toLocaleString();
 
-    item.appendChild(title);
-    item.appendChild(date);
+    info.appendChild(title);
+    info.appendChild(date);
 
-    item.addEventListener('click', () => {
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'drawer-delete-btn';
+    deleteBtn.title = 'Delete chat';
+    deleteBtn.innerHTML = '&times;';
+    deleteBtn.onclick = (e) => {
+      e.stopPropagation();
+      deleteChat(chat.id);
+    };
+
+    item.appendChild(info);
+    item.appendChild(deleteBtn);
+
+    info.addEventListener('click', () => {
       selectChat(chat.id);
       toggleDrawer(false);
     });
 
     chatsList.appendChild(item);
   });
+}
+
+async function deleteChat(id: number) {
+  if (!confirm('Delete this chat?')) return;
+  try {
+    const res = await fetch(`/api/chats/${id}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (data.success) {
+      if (activeChatId === id) startNewChat();
+      loadChats();
+    }
+  } catch (err) {
+    console.error('Failed to delete chat:', err);
+  }
 }
 
 export async function selectChat(id: number) {
