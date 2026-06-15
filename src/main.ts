@@ -1,3 +1,34 @@
+import hljs from 'highlight.js/lib/core';
+import javascript from 'highlight.js/lib/languages/javascript';
+import typescript from 'highlight.js/lib/languages/typescript';
+import css from 'highlight.js/lib/languages/css';
+import json from 'highlight.js/lib/languages/json';
+import xml from 'highlight.js/lib/languages/xml';
+import bash from 'highlight.js/lib/languages/bash';
+import python from 'highlight.js/lib/languages/python';
+import markdown from 'highlight.js/lib/languages/markdown';
+import diff from 'highlight.js/lib/languages/diff';
+import yaml from 'highlight.js/lib/languages/yaml';
+
+hljs.registerLanguage('javascript', javascript);
+hljs.registerLanguage('js', javascript);
+hljs.registerLanguage('typescript', typescript);
+hljs.registerLanguage('ts', typescript);
+hljs.registerLanguage('css', css);
+hljs.registerLanguage('json', json);
+hljs.registerLanguage('xml', xml);
+hljs.registerLanguage('html', xml);
+hljs.registerLanguage('bash', bash);
+hljs.registerLanguage('sh', bash);
+hljs.registerLanguage('shell', bash);
+hljs.registerLanguage('python', python);
+hljs.registerLanguage('py', python);
+hljs.registerLanguage('markdown', markdown);
+hljs.registerLanguage('md', markdown);
+hljs.registerLanguage('diff', diff);
+hljs.registerLanguage('yaml', yaml);
+hljs.registerLanguage('yml', yaml);
+
 import { AppConfig, Chat, Message, SSEEvent, GitHubUser } from './types';
 
 // DOM Elements
@@ -99,11 +130,17 @@ export function parseMarkdown(text: string): string {
   html = html.replace(codeBlockRegex, (_match, lang, code) => {
     const cleanCode = code.trim();
     const langLabel = lang || 'code';
+    const previewBtn = langLabel === 'html'
+      ? `<button class="preview-btn" onclick="previewCode(this)">Preview</button>`
+      : '';
     return `
       <div class="code-block-wrapper">
         <div class="code-block-header">
           <span>${langLabel}</span>
-          <button class="copy-btn" onclick="copyToClipboard(this)">Copy</button>
+          <div class="code-block-actions">
+            ${previewBtn}
+            <button class="copy-btn" onclick="copyToClipboard(this)">Copy</button>
+          </div>
         </div>
         <pre><code class="language-${langLabel}">${cleanCode}</code></pre>
       </div>
@@ -424,6 +461,7 @@ export async function startAgentStream(chatId: number | null, isReconnect: boole
               ensureAssistantMessageBlock();
               assistantTextAccumulator += payload.content;
               currentAssistantContentDiv!.innerHTML = parseMarkdown(assistantTextAccumulator);
+              highlightCodeBlocks(currentAssistantContentDiv!);
               scrollToBottom();
               break;
 
@@ -981,6 +1019,22 @@ export async function openFile(relativePath: string) {
       editorTextarea.value = data.content;
       editorTextarea.removeAttribute('readonly');
       if (btnSaveFile) btnSaveFile.classList.remove('hidden');
+
+      // Add preview button for HTML files
+      const isHtmlFile = /\.html?$/i.test(relativePath);
+      const existingPreviewBtn = document.getElementById('btn-preview-file');
+      if (isHtmlFile && btnSaveFile && !existingPreviewBtn) {
+        const previewBtn = document.createElement('button');
+        previewBtn.id = 'btn-preview-file';
+        previewBtn.className = 'mini-btn';
+        previewBtn.style.border = '1px solid var(--color-accent)';
+        previewBtn.style.color = 'var(--color-accent)';
+        previewBtn.textContent = 'Open Preview';
+        previewBtn.onclick = () => openPreviewModal(data.content);
+        btnSaveFile.parentNode?.insertBefore(previewBtn, btnSaveFile);
+      } else if (!isHtmlFile && existingPreviewBtn) {
+        existingPreviewBtn.remove();
+      }
     } else {
       if (editorFileTitle) editorFileTitle.textContent = "Error loading file";
       editorTextarea.value = "Failed to load: " + data.error;
@@ -1177,6 +1231,7 @@ function renderConversation() {
         const contentDiv = document.createElement('div');
         contentDiv.className = 'msg-content';
         contentDiv.innerHTML = parseMarkdown(msg.content);
+        highlightCodeBlocks(contentDiv);
         msgDiv.appendChild(contentDiv);
         chatMessages.appendChild(msgDiv);
       }
@@ -1361,6 +1416,66 @@ export async function init() {
   if (body) {
     body.classList.toggle('hidden');
   }
+};
+
+export function highlightCodeBlocks(container: HTMLElement) {
+  container.querySelectorAll('pre code').forEach(el => {
+    if (!(el as HTMLElement).dataset.highlighted) {
+      hljs.highlightElement(el as HTMLElement);
+    }
+  });
+}
+
+export function openPreviewModal(htmlContent: string) {
+  const existing = document.getElementById('preview-modal-overlay');
+  if (existing) existing.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id = 'preview-modal-overlay';
+  overlay.className = 'modal-overlay';
+  overlay.style.zIndex = '2000';
+
+  const card = document.createElement('div');
+  card.className = 'modal-card preview-card';
+
+  card.innerHTML = `
+    <div class="modal-header">
+      <h3>Preview</h3>
+      <div style="display:flex;gap:8px">
+        <button class="mini-btn" id="btn-preview-open-tab">Open in tab</button>
+        <button class="close-button" id="btn-preview-close">&times;</button>
+      </div>
+    </div>
+    <div class="modal-body" style="padding:0;display:flex;flex:1;overflow:hidden">
+      <iframe id="preview-iframe" style="width:100%;height:100%;border:none;background:#fff"></iframe>
+    </div>
+  `;
+
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+
+  const iframe = document.getElementById('preview-iframe') as HTMLIFrameElement;
+  const blob = new Blob([htmlContent], { type: 'text/html' });
+  iframe.src = URL.createObjectURL(blob);
+
+  document.getElementById('btn-preview-close')!.onclick = () => overlay.remove();
+  document.getElementById('btn-preview-open-tab')!.onclick = () => {
+    const win = window.open('', '_blank');
+    if (win) {
+      win.document.write(htmlContent);
+      win.document.close();
+    }
+  };
+  overlay.onclick = (e) => {
+    if (e.target === overlay) overlay.remove();
+  };
+}
+
+(window as any).previewCode = (btn: HTMLButtonElement) => {
+  const wrapper = btn.closest('.code-block-wrapper');
+  const codeEl = wrapper ? wrapper.querySelector('code') : null;
+  if (!codeEl) return;
+  openPreviewModal(codeEl.textContent || '');
 };
 
 document.addEventListener('DOMContentLoaded', init);
