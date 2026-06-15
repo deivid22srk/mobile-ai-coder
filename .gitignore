@@ -4,4 +4,6 @@ workspace/
 .DS_Store
 *.log
 database.json
+database.json.backup
+database.sqlite
 config.json

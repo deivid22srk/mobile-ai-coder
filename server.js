@@ -4,6 +4,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const { exec } = require('child_process');
 const fsSync = require('fs');
+const initSqlJs = require('sql.js');
 
 const app = express();
 app.use(cors());
@@ -12,85 +13,184 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Path to store config
 const CONFIG_FILE = path.join(__dirname, 'config.json');
-const DB_FILE = path.join(__dirname, 'database.json');
+const DB_FILE = path.join(__dirname, 'database.sqlite');
+const DB_LEGACY_FILE = path.join(__dirname, 'database.json');
 
-// Simple JSON Database for persistence (better for Termux/Android environments)
-class JSONDb {
+// ------------------------------------------------------------------
+// SQLite Database (sql.js — pure JS, no native compilation needed)
+// ------------------------------------------------------------------
+class SqliteDb {
   constructor(filePath) {
     this.filePath = filePath;
-    this.init();
+    this.db = null;
   }
 
-  init() {
-    if (!fsSync.existsSync(this.filePath)) {
-      const initialData = { chats: [], messages: [] };
-      fsSync.writeFileSync(this.filePath, JSON.stringify(initialData, null, 2), 'utf-8');
+  async init() {
+    const SQL = await initSqlJs();
+    
+    // Try to migrate legacy JSON data first
+    await this.migrateFromJson(SQL);
+
+    // Load or create SQLite database
+    if (fsSync.existsSync(this.filePath)) {
+      const buffer = fsSync.readFileSync(this.filePath);
+      this.db = new SQL.Database(buffer);
+    } else {
+      this.db = new SQL.Database();
     }
+
+    // Ensure schema exists
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS chats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )
+    `);
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id INTEGER NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        type TEXT DEFAULT 'text',
+        tool_call_id TEXT,
+        tool_calls TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+      )
+    `);
+    // Enable WAL mode for better concurrent reads
+    this.db.run('PRAGMA journal_mode=WAL');
+
+    this.save();
   }
 
-  read() {
+  async migrateFromJson(SQL) {
+    if (!fsSync.existsSync(DB_LEGACY_FILE)) return;
+    if (fsSync.existsSync(this.filePath)) return; // Already migrated
+
+    console.log('Migrating legacy JSON database to SQLite...');
     try {
-      const data = fsSync.readFileSync(this.filePath, 'utf-8');
-      return JSON.parse(data);
+      const jsonData = JSON.parse(fsSync.readFileSync(DB_LEGACY_FILE, 'utf-8'));
+      if (!jsonData.chats || jsonData.chats.length === 0) return;
+
+      this.db = new SQL.Database();
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS chats (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        )
+      `);
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          chat_id INTEGER NOT NULL,
+          role TEXT NOT NULL,
+          content TEXT NOT NULL,
+          type TEXT DEFAULT 'text',
+          tool_call_id TEXT,
+          tool_calls TEXT,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+        )
+      `);
+
+      const insertChat = this.db.prepare('INSERT INTO chats (id, title, created_at) VALUES (?, ?, ?)');
+      const insertMsg = this.db.prepare('INSERT INTO messages (chat_id, role, content, type, tool_call_id, tool_calls, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)');
+
+      for (const chat of jsonData.chats) {
+        insertChat.run([chat.id, chat.title, chat.createdAt]);
+      }
+      for (const msg of jsonData.messages) {
+        insertMsg.run([
+          msg.chatId,
+          msg.role,
+          typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
+          msg.type || 'text',
+          msg.tool_call_id || null,
+          msg.tool_calls ? JSON.stringify(msg.tool_calls) : null,
+          msg.createdAt || new Date().toISOString()
+        ]);
+      }
+
+      this.save();
+      // Rename legacy file so it won't be migrated again
+      fsSync.renameSync(DB_LEGACY_FILE, DB_LEGACY_FILE + '.backup');
+      console.log(`Migration complete: ${jsonData.chats.length} chats, ${jsonData.messages.length} messages`);
     } catch (err) {
-      return { chats: [], messages: [] };
+      console.error('Migration failed (legacy file may be corrupt):', err.message);
+      this.db = new SQL.Database();
     }
   }
 
-  write(data) {
-    fsSync.writeFileSync(this.filePath, JSON.stringify(data, null, 2), 'utf-8');
+  save() {
+    const data = this.db.export();
+    const buffer = Buffer.from(data);
+    fsSync.writeFileSync(this.filePath, buffer);
   }
 
   getChats() {
-    return this.read().chats.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    const rows = this.db.exec('SELECT id, title, created_at FROM chats ORDER BY created_at DESC');
+    if (!rows.length) return [];
+    return rows[0].values.map(row => ({
+      id: row[0],
+      title: row[1],
+      createdAt: row[2]
+    }));
   }
 
   createChat(title) {
-    const data = this.read();
-    const newChat = {
-      id: data.chats.length > 0 ? Math.max(...data.chats.map(c => c.id)) + 1 : 1,
-      title: title || 'New Chat',
-      createdAt: new Date().toISOString()
-    };
-    data.chats.push(newChat);
-    this.write(data);
-    return newChat;
+    const createdAt = new Date().toISOString();
+    this.db.run('INSERT INTO chats (title, created_at) VALUES (?, ?)', [title || 'New Chat', createdAt]);
+    const id = this.db.exec('SELECT last_insert_rowid()')[0].values[0][0];
+    this.save();
+    return { id, title: title || 'New Chat', createdAt };
   }
 
   getChat(id) {
-    const data = this.read();
-    const chat = data.chats.find(c => c.id === parseInt(id));
-    if (!chat) return null;
-    const messages = data.messages.filter(m => m.chatId === parseInt(id));
-    return { ...chat, messages };
+    const rows = this.db.exec('SELECT id, title, created_at FROM chats WHERE id = ?', [id]);
+    if (!rows.length || !rows[0].values.length) return null;
+    const chat = rows[0].values[0];
+    const msgRows = this.db.exec(
+      'SELECT id, chat_id, role, content, type, tool_call_id, tool_calls, created_at FROM messages WHERE chat_id = ? ORDER BY id ASC',
+      [id]
+    );
+    const messages = msgRows.length ? msgRows[0].values.map(row => ({
+      id: row[0],
+      chatId: row[1],
+      role: row[2],
+      content: row[3],
+      type: row[4],
+      tool_call_id: row[5] || undefined,
+      tool_calls: row[6] ? JSON.parse(row[6]) : undefined,
+      createdAt: row[7]
+    })) : [];
+    return { id: chat[0], title: chat[1], createdAt: chat[2], messages };
   }
 
   deleteChat(id) {
-    const data = this.read();
-    data.chats = data.chats.filter(c => c.id !== parseInt(id));
-    data.messages = data.messages.filter(m => m.chatId !== parseInt(id));
-    this.write(data);
+    this.db.run('DELETE FROM messages WHERE chat_id = ?', [id]);
+    this.db.run('DELETE FROM chats WHERE id = ?', [id]);
+    this.save();
   }
 
   saveMessage(chatId, role, content, type = 'text', toolCallId = null, toolCalls = null) {
-    const data = this.read();
-    const newMessage = {
-      id: data.messages.length > 0 ? Math.max(...data.messages.map(m => m.id)) + 1 : 1,
-      chatId: parseInt(chatId),
-      role,
-      content: typeof content === 'string' ? content : JSON.stringify(content),
-      type,
-      createdAt: new Date().toISOString()
-    };
-    if (toolCallId) newMessage.tool_call_id = toolCallId;
-    if (toolCalls) newMessage.tool_calls = toolCalls;
-    data.messages.push(newMessage);
-    this.write(data);
-    return newMessage;
+    const createdAt = new Date().toISOString();
+    const contentStr = typeof content === 'string' ? content : JSON.stringify(content);
+    const toolCallsStr = toolCalls ? JSON.stringify(toolCalls) : null;
+    this.db.run(
+      'INSERT INTO messages (chat_id, role, content, type, tool_call_id, tool_calls, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [chatId, role, contentStr, type, toolCallId, toolCallsStr, createdAt]
+    );
+    const id = this.db.exec('SELECT last_insert_rowid()')[0].values[0][0];
+    this.save();
+    return { id, chatId, role, content: contentStr, type, tool_call_id: toolCallId, tool_calls: toolCalls, createdAt };
   }
 }
 
-const db = new JSONDb(DB_FILE);
+const db = new SqliteDb(DB_FILE);
 
 // Default configurations
 const DEFAULT_CONFIG = {
@@ -1279,10 +1379,19 @@ app.post('/api/chat', async (req, res) => {
 
 // Port configuration
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, async () => {
+
+async function start() {
+  await db.init();
   const config = await getConfig();
-  console.log(`===================================================`);
-  console.log(`Mobile Code Agent listening on http://localhost:${PORT}`);
-  console.log(`Workspace folder is: ${config.workspacePath}`);
-  console.log(`===================================================`);
+  app.listen(PORT, () => {
+    console.log(`===================================================`);
+    console.log(`Mobile Code Agent listening on http://localhost:${PORT}`);
+    console.log(`Workspace folder is: ${config.workspacePath}`);
+    console.log(`===================================================`);
+  });
+}
+
+start().catch(err => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
 });
