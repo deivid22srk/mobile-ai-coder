@@ -94,6 +94,14 @@ html {
   z-index: 100;
 }
 
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
 .logo {
   display: flex;
   align-items: center;
@@ -1450,6 +1458,71 @@ textarea#chat-input {
   }
   .settings-nav-item {
     white-space: nowrap;
+  }
+}
+
+@media (max-width: 600px) {
+  .app-header {
+    padding: 0 8px;
+    gap: 2px;
+  }
+
+  .header-left {
+    display: flex !important;
+    align-items: center;
+    gap: 4px;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .model-select-wrapper {
+    margin: 0 2px;
+    max-width: 100px;
+    flex-shrink: 1;
+  }
+
+  .header-model-label {
+    display: none;
+  }
+
+  .model-trigger-chevron {
+    display: none;
+  }
+
+  .header-actions {
+    gap: 2px;
+    flex-shrink: 0;
+  }
+
+  .icon-button {
+    width: 32px;
+    height: 32px;
+  }
+
+  .logo-text {
+    display: none;
+  }
+}
+
+@media (max-width: 400px) {
+  .model-select-wrapper {
+    max-width: 36px;
+    margin: 0;
+  }
+
+  .header-model-trigger {
+    padding: 4px;
+    justify-content: center;
+  }
+
+  .model-trigger-icon {
+    margin: 0;
+  }
+
+  .icon-button {
+    width: 28px;
+    height: 28px;
   }
 }
 

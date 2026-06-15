@@ -1,6 +1,6 @@
-# Claude Code Mobile Agent
+# Mobile AI Coder
 
-Mobile Code Agent is a **powerful agentic AI coding assistant** that runs entirely on your device (including Termux on Android). It connects to any OpenAI-compatible API and provides a premium dark-themed chat interface where an AI agent can read/write files, execute commands, and manage GitHub repositories.
+Mobile AI Coder is a **powerful agentic AI coding assistant** that runs entirely on your device (including Termux on Android). It connects to any OpenAI-compatible API and provides a premium dark-themed chat interface where an AI agent can read/write files, execute commands, and manage GitHub repositories.
 
 [🇧🇷 Ver versão em Português](#português)
 
@@ -11,6 +11,7 @@ Mobile Code Agent is a **powerful agentic AI coding assistant** that runs entire
 - **Chat History & Persistence** — All your conversations are saved locally in a JSON database. Create new chats, switch between previous sessions, and never lose your context.
 - **TypeScript Frontend** — The entire web interface has been migrated to TypeScript for better maintainability and type safety.
 - **Categorized Settings** — A dedicated configuration screen organized into logical subcategories (LLM Config, GitHub, General, and Tools).
+- **Multiple Providers** — Supports both OpenAI-compatible endpoints and Opencode Zen with easy switching.
 - **Real-Time LLM Streaming** — Token-by-token text and reasoning display using Server-Sent Events (SSE).
 - **Thinking Extraction** — Supports native `reasoning_content`, `<think>` tags (DeepSeek-R1), and `<thought>` tags.
 - **GitHub-Powered Agent** — Dedicated tools (`github_get_user`, `github_list_repos`, `github_create_repo`, `github_push_files`) to manage your repositories directly from the chat.
@@ -39,8 +40,8 @@ Mobile Code Agent is a **powerful agentic AI coding assistant** that runs entire
 
 ```bash
 # Clone the repository
-git clone https://github.com/deivid22srk/mobile-code-agent.git
-cd mobile-code-agent
+git clone https://github.com/deivid22srk/mobile-ai-coder.git
+cd mobile-ai-coder
 
 # Install dependencies
 npm install
@@ -73,13 +74,14 @@ On first launch, the app creates a `config.json` with defaults. You can change a
 
 ## 🇧🇷 Português
 
-O **Claude Code Mobile Agent** é um assistente de codificação agente local que roda inteiramente no seu dispositivo.
+O **Mobile AI Coder** é um assistente de codificação agente local que roda inteiramente no seu dispositivo.
 
 ### Novidades desta versão:
 - **Histórico de Chat** — Todas as conversas são salvas automaticamente. Continue de onde parou.
 - **Interface em TypeScript** — Código mais robusto e fácil de manter.
 - **Configurações Categorizadas** — Telas específicas para LLM, GitHub, Geral e Ferramentas.
-- **Portabilidade Total** — Agora utiliza um banco de dados JSON nativo, eliminando erros de instalação no Termux/Android.
+- **Múltiplos Providers** — Suporte a endpoints OpenAI-compatíveis e Opencode Zen.
+- **Portabilidade Total** — Utiliza banco de dados JSON nativo, eliminando erros de instalação no Termux/Android.
 
 ### Como rodar:
 1. `npm install`
