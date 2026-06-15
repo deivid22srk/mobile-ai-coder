@@ -841,31 +841,6 @@ textarea#chat-input {
   }
 }
 
-/* Thought process rendering styles */
-.thought-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background-color: var(--color-btn-sec);
-  color: var(--color-accent);
-  border: 1px solid var(--color-accent);
-  border-radius: 6px;
-  padding: 6px 12px;
-  font-family: var(--font-sans);
-  font-size: 0.8rem;
-  font-weight: 500;
-  cursor: pointer;
-  margin-top: 8px;
-  transition: all 0.2s ease;
-  width: fit-content;
-  user-select: none;
-}
-
-.thought-btn:hover {
-  background-color: rgba(196, 98, 45, 0.15);
-  box-shadow: 0 0 8px rgba(196, 98, 45, 0.2);
-}
-
 /* Header Model Trigger (opens searchable dialog) */
 .model-select-wrapper {
   flex: 1;
@@ -1271,4 +1246,85 @@ textarea#chat-input {
   color: var(--color-text-sub);
   font-size: 0.85rem;
   line-height: 1.5;
+}
+
+/* -------------------------------------------------------------
+ * GitHub Integration
+ * ------------------------------------------------------------- */
+.github-status-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  margin-bottom: 16px;
+  background-color: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+}
+
+.github-status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background-color: var(--color-text-sub);
+  flex-shrink: 0;
+  transition: background-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.github-status-dot.is-connected {
+  background-color: #66BB6A;
+  box-shadow: 0 0 0 3px rgba(102, 187, 106, 0.18);
+}
+
+.github-status-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.github-status-text strong {
+  color: var(--color-text-main);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.github-status-text span {
+  color: var(--color-text-sub);
+  font-size: 0.75rem;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.github-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--color-border);
+  flex-shrink: 0;
+  object-fit: cover;
+}
+
+.github-avatar.hidden {
+  display: none;
+}
+
+.settings-inline-link {
+  color: var(--color-accent);
+  text-decoration: none;
+}
+
+.settings-inline-link:hover {
+  text-decoration: underline;
+}
+
+.form-group code {
+  background-color: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 0.72rem;
+  font-family: var(--font-mono);
+  color: var(--color-accent);
 }

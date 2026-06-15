@@ -16,8 +16,10 @@ const DEFAULT_CONFIG = {
   apiUrl: 'https://qwenproxy-cookies.onrender.com/v1',
   apiKey: '0',
   model: 'qwen-plus',
-  systemPrompt: 'You are Claude Code Mobile, a powerful agentic AI coding assistant. You have access to local tools in the workspace: write_file, read_file, list_dir, run_command, and git_clone.\n\nUse these tools to help the user. Always explain what you are doing (e.g. "I am going to read the index.html file to inspect its content") right before invoking a tool. Make sure code changes are correct and tested.',
-  workspacePath: path.join(__dirname, 'workspace')
+  systemPrompt: 'You are Claude Code Mobile, a powerful agentic AI coding assistant. You have access to local tools in the workspace: write_file, read_file, list_dir, run_command, git_clone, and (when the user has connected GitHub) github_list_repos, github_create_repo, github_push_files, github_get_user.\n\nUse these tools to help the user. Always explain what you are doing (e.g. "I am going to read the index.html file to inspect its content") right before invoking a tool. Make sure code changes are correct and tested.',
+  workspacePath: path.join(__dirname, 'workspace'),
+  githubToken: '',
+  githubUser: null
 };
 
 // Load configurations
@@ -52,6 +54,49 @@ function resolveWorkspacePath(workspacePath, relativePath) {
     throw new Error('Access denied: Path is outside the workspace directory');
   }
   return resolvedPath;
+}
+
+// GitHub API helper — used both by tools and /api/github/* endpoints
+const GITHUB_API_BASE = 'https://api.github.com';
+
+async function githubRequest(pathname, options = {}) {
+  const config = await getConfig();
+  if (!config.githubToken) {
+    throw new Error('GitHub is not connected. Ask the user to add a Personal Access Token in Settings → GitHub Integration.');
+  }
+  const headers = Object.assign(
+    {
+      'Authorization': `Bearer ${config.githubToken}`,
+      'Accept': 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'User-Agent': 'mobile-code-agent'
+    },
+    options.headers || {}
+  );
+  if (options.body && !headers['Content-Type']) {
+    headers['Content-Type'] = 'application/json';
+  }
+  const res = await fetch(`${GITHUB_API_BASE}${pathname}`, {
+    method: options.method || 'GET',
+    headers,
+    body: options.body ? (typeof options.body === 'string' ? options.body : JSON.stringify(options.body)) : undefined
+  });
+  const text = await res.text();
+  let data = null;
+  if (text) {
+    try { data = JSON.parse(text); } catch (_) { data = text; }
+  }
+  if (!res.ok) {
+    const message = (data && data.message) ? data.message : (typeof data === 'string' ? data : `GitHub API error ${res.status}`);
+    throw new Error(`GitHub ${res.status}: ${message}`);
+  }
+  return data;
+}
+
+function redactToken(token) {
+  if (!token) return '';
+  if (token.length <= 8) return '•'.repeat(token.length);
+  return token.slice(0, 4) + '•'.repeat(Math.max(0, token.length - 8)) + token.slice(-4);
 }
 
 // Tool definitions for OpenAI API
@@ -147,6 +192,105 @@ const toolsDefinition = [
         required: ['repo_url']
       }
     }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'github_get_user',
+      description: 'Returns information about the currently connected GitHub account (login, name, avatar).',
+      parameters: { type: 'object', properties: {} }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'github_list_repos',
+      description: 'Lists repositories owned by (or visible to) the connected GitHub account. Useful before creating a new one to avoid name clashes.',
+      parameters: {
+        type: 'object',
+        properties: {
+          visibility: {
+            type: 'string',
+            enum: ['all', 'owner', 'public', 'private'],
+            description: 'Filter by visibility. Defaults to "owner".'
+          },
+          per_page: {
+            type: 'integer',
+            description: 'How many repositories to return (max 100). Defaults to 30.'
+          }
+        }
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'github_create_repo',
+      description: 'Creates a new GitHub repository under the connected account. Use this when the user asks to publish code or when you need a destination for github_push_files.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: {
+            type: 'string',
+            description: 'Repository name (lowercase, dashes/underscores allowed).'
+          },
+          description: {
+            type: 'string',
+            description: 'Short description of the repository.'
+          },
+          private: {
+            type: 'boolean',
+            description: 'Whether the repository should be private. Defaults to false.'
+          },
+          auto_init: {
+            type: 'boolean',
+            description: 'Whether to initialize the repo with a README. Defaults to true.'
+          }
+        },
+        required: ['name']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'github_push_files',
+      description: 'Creates or updates one or more files in a GitHub repository using the Contents API. Each file is committed atomically (per file) with the provided commit message. The repository must already exist (use github_create_repo first if not).',
+      parameters: {
+        type: 'object',
+        properties: {
+          owner: {
+            type: 'string',
+            description: 'Repository owner (username or org). If omitted, defaults to the connected account.'
+          },
+          repo: {
+            type: 'string',
+            description: 'Repository name.'
+          },
+          branch: {
+            type: 'string',
+            description: 'Target branch. Defaults to the repository default branch (usually "main").'
+          },
+          commit_message: {
+            type: 'string',
+            description: 'Commit message to use for all the file updates.'
+          },
+          files: {
+            type: 'array',
+            description: 'List of files to create or update.',
+            items: {
+              type: 'object',
+              required: ['path', 'content'],
+              properties: {
+                path: { type: 'string', description: 'File path inside the repository (e.g. "src/index.js").' },
+                content: { type: 'string', description: 'Full file content to write.' }
+              }
+            }
+          }
+        },
+        required: ['repo', 'files']
+      }
+    }
   }
 ];
 
@@ -169,6 +313,72 @@ app.post('/api/settings', async (req, res) => {
     const updated = { ...current, ...req.body };
     await saveConfig(updated);
     res.json({ success: true, config: updated });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GitHub Integration Endpoints
+app.get('/api/github/status', async (req, res) => {
+  try {
+    const config = await getConfig();
+    res.json({
+      connected: Boolean(config.githubToken),
+      user: config.githubUser || null,
+      tokenPreview: redactToken(config.githubToken)
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/github/connect', async (req, res) => {
+  const token = (req.body && req.body.token || '').trim();
+  if (!token) {
+    return res.status(400).json({ error: 'GitHub Personal Access Token is required.' });
+  }
+  try {
+    const userRes = await fetch(`${GITHUB_API_BASE}/user`, {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'User-Agent': 'mobile-code-agent'
+      }
+    });
+    const userText = await userRes.text();
+    let userData = null;
+    try { userData = JSON.parse(userText); } catch (_) { userData = { message: userText }; }
+    if (!userRes.ok) {
+      return res.status(userRes.status).json({
+        error: (userData && userData.message) || `GitHub rejected the token (HTTP ${userRes.status}).`
+      });
+    }
+    const current = await getConfig();
+    const updated = {
+      ...current,
+      githubToken: token,
+      githubUser: {
+        login: userData.login,
+        name: userData.name || userData.login,
+        avatarUrl: userData.avatar_url,
+        htmlUrl: userData.html_url,
+        publicRepos: userData.public_repos
+      }
+    };
+    await saveConfig(updated);
+    res.json({ success: true, user: updated.githubUser, tokenPreview: redactToken(token) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/github/disconnect', async (req, res) => {
+  try {
+    const current = await getConfig();
+    const updated = { ...current, githubToken: '', githubUser: null };
+    await saveConfig(updated);
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -643,6 +853,100 @@ app.post('/api/chat', async (req, res) => {
                 const relPath = args.relative_path;
                 const cmd = relPath ? `git clone "${repoUrl}" "${relPath}"` : `git clone "${repoUrl}"`;
                 toolOutput = await executeCommandWithStreaming(cmd, config.workspacePath, id, sendEvent, 180);
+                break;
+              }
+              case 'github_get_user': {
+                const data = await githubRequest('/user');
+                toolOutput = JSON.stringify({
+                  login: data.login,
+                  name: data.name,
+                  avatar_url: data.avatar_url,
+                  html_url: data.html_url,
+                  public_repos: data.public_repos,
+                  private_repos: (data.total_private_repos != null ? data.total_private_repos : null)
+                });
+                break;
+              }
+              case 'github_list_repos': {
+                const visibility = args.visibility || 'owner';
+                const perPage = Math.min(Math.max(parseInt(args.per_page, 10) || 30, 1), 100);
+                const data = await githubRequest(`/user/repos?visibility=${encodeURIComponent(visibility)}&per_page=${perPage}&sort=updated`);
+                toolOutput = JSON.stringify(data.map(r => ({
+                  name: r.name,
+                  full_name: r.full_name,
+                  private: r.private,
+                  html_url: r.html_url,
+                  description: r.description,
+                  default_branch: r.default_branch,
+                  updated_at: r.updated_at
+                })));
+                break;
+              }
+              case 'github_create_repo': {
+                const body = {
+                  name: args.name,
+                  description: args.description || '',
+                  private: Boolean(args.private),
+                  auto_init: args.auto_init !== false
+                };
+                const data = await githubRequest('/user/repos', { method: 'POST', body });
+                toolOutput = JSON.stringify({
+                  name: data.name,
+                  full_name: data.full_name,
+                  html_url: data.html_url,
+                  private: data.private,
+                  default_branch: data.default_branch,
+                  clone_url: data.clone_url
+                });
+                break;
+              }
+              case 'github_push_files': {
+                const cfg = await getConfig();
+                const owner = args.owner || (cfg.githubUser && cfg.githubUser.login);
+                const repo = args.repo;
+                if (!owner) {
+                  throw new Error('Could not determine repository owner. Connect GitHub first or pass owner explicitly.');
+                }
+                // Resolve default branch if not provided
+                let branch = args.branch;
+                if (!branch) {
+                  const repoInfo = await githubRequest(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
+                  branch = repoInfo.default_branch;
+                }
+                const files = Array.isArray(args.files) ? args.files : [];
+                if (files.length === 0) {
+                  throw new Error('No files provided to github_push_files.');
+                }
+                const commitMessage = args.commit_message || `Update ${files.length} file(s) via mobile-code-agent`;
+                const results = [];
+                for (const file of files) {
+                  // Look up existing file SHA if updating
+                  let sha;
+                  try {
+                    const existing = await githubRequest(
+                      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodeURIComponent(file.path)}?ref=${encodeURIComponent(branch)}`
+                    );
+                    if (existing && existing.sha) sha = existing.sha;
+                  } catch (_) {
+                    // File doesn't exist yet — that's fine for new files
+                  }
+                  const body = {
+                    message: commitMessage,
+                    branch,
+                    content: Buffer.from(String(file.content), 'utf-8').toString('base64')
+                  };
+                  if (sha) body.sha = sha;
+                  const result = await githubRequest(
+                    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodeURIComponent(file.path)}`,
+                    { method: 'PUT', body }
+                  );
+                  results.push({
+                    path: file.path,
+                    commit_sha: result.commit && result.commit.sha,
+                    content_url: result.content && result.content.html_url
+                  });
+                }
+                toolOutput = JSON.stringify({ owner, repo, branch, count: results.length, files: results });
                 break;
               }
               default:

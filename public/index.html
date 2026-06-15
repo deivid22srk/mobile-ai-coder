@@ -147,6 +147,39 @@
           </div>
         </div>
       </section>
+
+      <!-- Section: GitHub Integration -->
+      <section class="settings-section">
+        <div class="settings-section-header">
+          <span class="settings-section-eyebrow">Account</span>
+          <h3 class="settings-section-title">GitHub Integration</h3>
+          <p class="settings-section-desc">Connect your GitHub account so the agent can create repositories and push code on your behalf.</p>
+        </div>
+        <div class="settings-card">
+          <div class="github-status-row" id="github-status-row">
+            <span class="github-status-dot" id="github-status-dot"></span>
+            <div class="github-status-text">
+              <strong id="github-status-title">Not connected</strong>
+              <span id="github-status-sub">Add a Personal Access Token below to enable GitHub tools for the agent.</span>
+            </div>
+            <img id="github-avatar" class="github-avatar hidden" alt="" />
+          </div>
+          <div class="form-group settings-form-group-last">
+            <label for="cfg-github-token">Personal Access Token</label>
+            <input type="password" id="cfg-github-token" placeholder="ghp_... or github_pat_..." autocomplete="off">
+            <span class="field-help">
+              Create one at
+              <a href="https://github.com/settings/tokens?type=beta" target="_blank" rel="noopener" class="settings-inline-link">github.com/settings/tokens</a>.
+              Required scopes: <code>repo</code> (and <code>workflow</code> if you want CI updates).
+            </span>
+          </div>
+        </div>
+        <div class="settings-action-row">
+          <button id="btn-github-connect" class="primary-button settings-block-btn">Connect GitHub</button>
+          <button id="btn-github-disconnect" class="secondary-button hidden">Disconnect</button>
+          <span id="github-status-message" class="settings-test-status"></span>
+        </div>
+      </section>
     </div>
   </section>
 
@@ -228,21 +261,8 @@
     </div>
   </div>
 
-  <!-- Thinking Process Modal -->
-  <div id="modal-thought" class="modal-overlay hidden">
-    <div class="modal-card">
-      <div class="modal-header">
-        <h3>🧠 Pensamento do Agente</h3>
-        <button class="close-button">&times;</button>
-      </div>
-      <div class="modal-body">
-        <div class="terminal-output-container" style="height: 400px; margin-top: 0;">
-          <pre id="thought-content-pre" class="terminal-output" style="color: #A0AEC0; font-family: var(--font-mono); font-size: 0.85rem; height: 100%; overflow-y: auto; white-space: pre-wrap; margin: 0;">Aguardando pensamentos...</pre>
-        </div>
-      </div>
-    </div>
-  </div>
+  <!-- Thinking Process Modal (removed) -->
 
-  <script src="app.js"></script>
+<script src="app.js"></script>
 </body>
 </html>

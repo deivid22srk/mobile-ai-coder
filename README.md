@@ -44,6 +44,7 @@ The interface follows the **Claude Code** dark theme with coral accent (`#C4622D
 | 📂 File Explorer | Split-view file manager with built-in code editor |
 | ⚙️ Settings | Full-page configuration screen (not a dialog) with grouped sections |
 | 🔍 Model Picker | Searchable dialog with fuzzy model search and live active-model highlight |
+| 🐙 GitHub | Connect a Personal Access Token so the agent can list/create repos and push code |
 | 💻 Terminal | Manual command runner for direct shell access |
 
 ### Quick Start
@@ -73,8 +74,23 @@ On first launch, the app creates a `config.json` with defaults:
 | `model` | `qwen-plus` | Default LLM model |
 | `workspacePath` | `./workspace` | Sandboxed directory for file operations |
 | `systemPrompt` | *(built-in)* | Agent system instructions |
+| `githubToken` | *(empty)* | GitHub PAT that unlocks the `github_*` tools for the agent |
+| `githubUser` | `null` | Cached info about the connected GitHub account |
 
-You can change all settings via the ⚙️ gear icon — which now opens a **full configuration screen** (not a dialog) with grouped sections for *API Provider*, *Workspace* and *System Instructions*. The header model trigger opens a **searchable model picker dialog** where you can type to filter through every model exposed by your provider.
+You can change all settings via the ⚙️ gear icon — which now opens a **full configuration screen** (not a dialog) with grouped sections for *API Provider*, *Workspace*, *System Instructions* and *GitHub Integration*. The header model trigger opens a **searchable model picker dialog** where you can type to filter through every model exposed by your provider.
+
+### GitHub Integration
+
+Connect your account once in **Settings → GitHub Integration** by pasting a [Personal Access Token](https://github.com/settings/tokens?type=beta) (scope `repo` is recommended). Once connected, the agent gains four extra tools:
+
+| Tool | Description |
+|---|---|
+| `github_get_user` | Returns info about the connected account (login, name, public repos). |
+| `github_list_repos` | Lists repos owned by (or visible to) the account. |
+| `github_create_repo` | Creates a new repository under your account. |
+| `github_push_files` | Creates or updates one or more files in an existing repo via the Contents API. |
+
+The agent can now do end-to-end tasks like *"create a new public repo called `my-app`, then push these 4 files to `main` with a sensible commit message"* without leaving the chat.
 
 ### Architecture
 
@@ -128,6 +144,7 @@ The AI agent has access to these workspace tools:
 - **Client Disconnect Handling** — Aborts API calls when the user closes the browser tab
 - **Settings as a Screen, not a Dialog** — The configuration UI is a dedicated full-page experience with grouped sections and inline feedback
 - **Searchable Model Picker** — A focused dialog with a fuzzy text filter, current-model highlight and zero-friction keyboard escape
+- **GitHub-Powered Agent** — A dedicated GitHub section in Settings plus four new tools (`github_get_user`, `github_list_repos`, `github_create_repo`, `github_push_files`) so the agent can publish code on your behalf
 
 ### Tech Stack
 
@@ -182,7 +199,20 @@ Na primeira execução, o app cria um `config.json` com valores padrão:
 | `workspacePath` | `./workspace` | Diretório isolado para operações de arquivo |
 | `systemPrompt` | *(embutido)* | Instruções de sistema do agente |
 
-Você pode alterar todas as configurações pelo ícone ⚙️ — que agora abre uma **tela de configuração completa** (não um diálogo) com seções agrupadas para *Provedor de API*, *Workspace* e *Instruções de Sistema*. O gatilho de modelo no header abre um **diálogo de seleção de modelo com busca**, onde você pode digitar para filtrar entre todos os modelos expostos pelo seu provedor.
+Você pode alterar todas as configurações pelo ícone ⚙️ — que agora abre uma **tela de configuração completa** (não um diálogo) com seções agrupadas para *Provedor de API*, *Workspace*, *Instruções de Sistema* e *Integração com GitHub*. O gatilho de modelo no header abre um **diálogo de seleção de modelo com busca**, onde você pode digitar para filtrar entre todos os modelos expostos pelo seu provedor.
+
+### Integração com GitHub
+
+Conecte sua conta uma vez em **Configurações → Integração com GitHub** colando um [Personal Access Token](https://github.com/settings/tokens?type=beta) (escopo `repo` é o mínimo recomendado). Uma vez conectado, o agente ganha quatro ferramentas extras:
+
+| Ferramenta | Descrição |
+|---|---|
+| `github_get_user` | Retorna info da conta conectada (login, nome, repos públicos). |
+| `github_list_repos` | Lista repositórios da conta. |
+| `github_create_repo` | Cria um novo repositório na sua conta. |
+| `github_push_files` | Cria ou atualiza um ou mais arquivos em um repositório existente via API de Contents. |
+
+O agente agora consegue fazer tarefas completas como *"crie um repositório público chamado `meu-app` e depois envie estes 4 arquivos para a branch `main` com uma mensagem de commit decente"* sem sair do chat.
 
 ### Ferramentas Disponíveis
 
@@ -205,6 +235,7 @@ O agente de IA tem acesso a estas ferramentas no workspace:
 - **Tratamento de Desconexão** — Aborta chamadas à API quando o usuário fecha a aba do navegador
 - **Configurações como Tela, não Diálogo** — UI de configuração dedicada em página cheia, com seções agrupadas e feedback inline
 - **Seletor de Modelo com Busca** — Diálogo focado com filtro de texto fuzzy, destaque do modelo ativo e tecla ESC para fechar
+- **Agente com GitHub** — Seção dedicada nas Configurações e quatro tools novas (`github_get_user`, `github_list_repos`, `github_create_repo`, `github_push_files`) que permitem ao agente publicar código em seu nome
 
 ### Paleta de Cores (Tema Claude Code)
 

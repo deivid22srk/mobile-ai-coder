@@ -11,7 +11,6 @@ const screenSettings = document.getElementById('screen-settings');
 const modalModelPicker = document.getElementById('modal-model-picker');
 const modalExplorer = document.getElementById('modal-explorer');
 const modalTerminal = document.getElementById('modal-terminal');
-const modalThought = document.getElementById('modal-thought');
 
 // Menu buttons
 const btnSettings = document.getElementById('btn-settings');
@@ -33,9 +32,17 @@ const cfgApiKey = document.getElementById('cfg-api-key');
 const cfgModel = document.getElementById('cfg-model');
 const cfgWorkspace = document.getElementById('cfg-workspace');
 const cfgSystemPrompt = document.getElementById('cfg-system-prompt');
+const cfgGithubToken = document.getElementById('cfg-github-token');
 const btnSettingsSave = document.getElementById('btn-settings-save');
 const btnSettingsTest = document.getElementById('btn-settings-test');
 const settingsTestStatus = document.getElementById('settings-test-status');
+const btnGithubConnect = document.getElementById('btn-github-connect');
+const btnGithubDisconnect = document.getElementById('btn-github-disconnect');
+const githubStatusDot = document.getElementById('github-status-dot');
+const githubStatusTitle = document.getElementById('github-status-title');
+const githubStatusSub = document.getElementById('github-status-sub');
+const githubStatusMessage = document.getElementById('github-status-message');
+const githubAvatar = document.getElementById('github-avatar');
 
 // File Explorer Panel
 const btnRefreshFiles = document.getElementById('btn-refresh-files');
@@ -55,6 +62,7 @@ let appConfig = null;
 let activeEditorFile = null;
 let availableModels = [];
 let modelPickerSelected = null;
+let githubState = { connected: false, user: null };
 
 // Initialize
 async function init() {
@@ -62,6 +70,7 @@ async function init() {
   setupEventListeners();
   autoResizeTextarea(chatInput);
   await loadApiModels();
+  await refreshGithubStatus();
 }
 
 // Load Settings from Backend
@@ -143,6 +152,10 @@ function setupEventListeners() {
   // Settings save and test
   btnSettingsSave.addEventListener('click', saveSettings);
   btnSettingsTest.addEventListener('click', testApiConnection);
+
+  // GitHub integration
+  btnGithubConnect.addEventListener('click', connectGithub);
+  btnGithubDisconnect.addEventListener('click', disconnectGithub);
 
   // Send message
   btnSend.addEventListener('click', sendMessage);
@@ -248,10 +261,16 @@ function openSettingsScreen() {
     settingsTestStatus.textContent = '';
     settingsTestStatus.className = 'settings-test-status';
   }
+  if (githubStatusMessage) {
+    githubStatusMessage.textContent = '';
+    githubStatusMessage.className = 'settings-test-status';
+  }
   screenSettings.classList.remove('hidden');
   // Smooth scroll to top
   const body = screenSettings.querySelector('.settings-body');
   if (body) body.scrollTop = 0;
+  // Refresh GitHub status when the user opens settings
+  refreshGithubStatus();
 }
 
 function closeSettingsScreen() {
@@ -349,6 +368,104 @@ async function selectModel(modelId) {
     });
   } catch (err) {
     console.error('Failed to save model selection:', err);
+  }
+}
+
+// GitHub Integration
+async function refreshGithubStatus() {
+  try {
+    const res = await fetch('/api/github/status');
+    const data = await res.json();
+    githubState = { connected: Boolean(data.connected), user: data.user || null };
+    renderGithubStatus();
+  } catch (err) {
+    console.error('Failed to fetch GitHub status:', err);
+    setGithubStatusMessage('Could not reach the backend to check GitHub status.', 'error');
+  }
+}
+
+function renderGithubStatus() {
+  if (githubState.connected && githubState.user) {
+    githubStatusDot.className = 'github-status-dot is-connected';
+    githubStatusTitle.textContent = `Connected as @${githubState.user.login}`;
+    const meta = [];
+    if (githubState.user.name) meta.push(githubState.user.name);
+    if (Number.isFinite(githubState.user.publicRepos)) meta.push(`${githubState.user.publicRepos} public repos`);
+    githubStatusSub.textContent = meta.length ? meta.join(' • ') + ' • The agent can use github_* tools.' : 'The agent can use github_* tools.';
+    if (githubState.user.avatarUrl) {
+      githubAvatar.src = githubState.user.avatarUrl;
+      githubAvatar.alt = `${githubState.user.login} avatar`;
+      githubAvatar.classList.remove('hidden');
+    }
+    btnGithubConnect.classList.add('hidden');
+    btnGithubDisconnect.classList.remove('hidden');
+  } else {
+    githubStatusDot.className = 'github-status-dot';
+    githubStatusTitle.textContent = 'Not connected';
+    githubStatusSub.textContent = 'Add a Personal Access Token below to enable GitHub tools for the agent.';
+    githubAvatar.classList.add('hidden');
+    btnGithubConnect.classList.remove('hidden');
+    btnGithubDisconnect.classList.add('hidden');
+  }
+}
+
+function setGithubStatusMessage(message, kind) {
+  if (!githubStatusMessage) return;
+  githubStatusMessage.textContent = message;
+  githubStatusMessage.className = `settings-test-status${kind ? ' is-' + kind : ''}`;
+}
+
+async function connectGithub() {
+  const token = (cfgGithubToken.value || '').trim();
+  if (!token) {
+    setGithubStatusMessage('Please paste a Personal Access Token first.', 'error');
+    cfgGithubToken.focus();
+    return;
+  }
+  btnGithubConnect.disabled = true;
+  const originalLabel = btnGithubConnect.textContent;
+  btnGithubConnect.textContent = 'Connecting...';
+  setGithubStatusMessage('Validating token with GitHub...', '');
+  try {
+    const res = await fetch('/api/github/connect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token })
+    });
+    const data = await res.json();
+    if (res.ok && data.success) {
+      githubState = { connected: true, user: data.user };
+      renderGithubStatus();
+      setGithubStatusMessage(`Connected to @${data.user.login}.`, 'success');
+      cfgGithubToken.value = '';
+    } else {
+      setGithubStatusMessage(data.error || 'Failed to connect to GitHub.', 'error');
+    }
+  } catch (err) {
+    setGithubStatusMessage('Network error: ' + err.message, 'error');
+  } finally {
+    btnGithubConnect.disabled = false;
+    btnGithubConnect.textContent = originalLabel;
+  }
+}
+
+async function disconnectGithub() {
+  if (!confirm('Disconnect GitHub? The agent will no longer be able to call github_* tools.')) return;
+  btnGithubDisconnect.disabled = true;
+  try {
+    const res = await fetch('/api/github/disconnect', { method: 'POST' });
+    const data = await res.json();
+    if (res.ok && data.success) {
+      githubState = { connected: false, user: null };
+      renderGithubStatus();
+      setGithubStatusMessage('Disconnected from GitHub.', 'success');
+    } else {
+      setGithubStatusMessage(data.error || 'Failed to disconnect.', 'error');
+    }
+  } catch (err) {
+    setGithubStatusMessage('Network error: ' + err.message, 'error');
+  } finally {
+    btnGithubDisconnect.disabled = false;
   }
 }
 
@@ -747,12 +864,6 @@ async function sendMessage() {
   let currentAssistantMsgDiv = null;
   let currentAssistantContentDiv = null;
   let assistantTextAccumulator = '';
-  let activeReasoningText = '';
-  
-  const thoughtContentPre = document.getElementById('thought-content-pre');
-  if (thoughtContentPre) {
-    thoughtContentPre.textContent = 'Aguardando pensamentos...';
-  }
 
   // Helper function to dynamically append new message blocks in chronology
   const ensureAssistantMessageBlock = () => {
@@ -805,29 +916,8 @@ async function sendMessage() {
               break;
 
             case 'reasoning':
-              // Accumulate and display thought process in real-time
-              activeReasoningText += payload.content;
-              if (thoughtContentPre) {
-                thoughtContentPre.textContent = activeReasoningText;
-              }
-              
-              // Display live preview of thoughts in status bar
+              // Live preview of thoughts in status bar (no longer attached to bubble)
               statusText.innerHTML = `<span style="color:var(--color-accent)">🧠 Pensando:</span> ${payload.content.trim().slice(-40)}...`;
-
-              // Ensure we have a bubble container to attach thoughts modal button
-              ensureAssistantMessageBlock();
-
-              // Create thought toggle button in chat bubble if it doesn't exist
-              let btnThought = currentAssistantMsgDiv.querySelector('.thought-btn');
-              if (!btnThought) {
-                btnThought = document.createElement('button');
-                btnThought.className = 'thought-btn';
-                btnThought.innerHTML = `🧠 Ver Pensamento`;
-                btnThought.addEventListener('click', () => {
-                  toggleModal(modalThought, true);
-                });
-                currentAssistantMsgDiv.appendChild(btnThought);
-              }
               break;
 
             case 'text':
@@ -837,13 +927,7 @@ async function sendMessage() {
               // Streaming assistant text
               assistantTextAccumulator += payload.content;
               currentAssistantContentDiv.innerHTML = parseMarkdown(assistantTextAccumulator);
-              
-              // Ensure the thought button stays at the bottom of the content
-              let btnT = currentAssistantMsgDiv.querySelector('.thought-btn');
-              if (btnT) {
-                currentAssistantMsgDiv.appendChild(btnT); // Move to end of div
-              }
-              
+
               scrollToBottom();
               break;
 
