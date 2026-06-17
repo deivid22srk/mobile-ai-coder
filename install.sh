@@ -32,9 +32,8 @@ coder() {
 }
 EOF
 
-echo "  Done! Restart your terminal or run:"
+echo "  Done! Reloading ~/.bashrc..."
 echo ""
-echo "    source ~/.bashrc"
-echo ""
-echo "  Then type 'coder' to launch the TUI."
+source ~/.bashrc
+echo "  Type 'coder' to launch the TUI."
 echo ""
