@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -e
 
-INSTALL_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_URL="https://github.com/deivid22srk/mobile-ai-coder.git"
+INSTALL_DIR="${HOME}/mobile-ai-coder"
 MARKER="# mobile-ai-coder (Coder command)"
 
 echo ""
@@ -9,14 +10,24 @@ echo "  *coder — Installer"
 echo "  ==================="
 echo ""
 
-cd "$INSTALL_DIR"
+# Clone if not already in the repo
+if [ -d "$INSTALL_DIR/.git" ]; then
+  echo "  [0/3] Repository already cloned. Updating..."
+  cd "$INSTALL_DIR"
+  git pull
+else
+  echo "  [0/3] Cloning repository..."
+  git clone "$REPO_URL" "$INSTALL_DIR"
+  cd "$INSTALL_DIR"
+fi
+echo ""
 
-echo "  [1/2] Installing dependencies..."
+echo "  [1/3] Installing dependencies..."
 echo ""
 npm install
 echo ""
 
-echo "  [2/2] Configuring ~/.bashrc..."
+echo "  [2/3] Configuring ~/.bashrc..."
 echo ""
 
 if grep -q "$MARKER" ~/.bashrc 2>/dev/null; then
@@ -32,7 +43,7 @@ coder() {
 }
 EOF
 
-echo "  Done! Reloading ~/.bashrc..."
+echo "  [3/3] Done! Reloading ~/.bashrc..."
 echo ""
 source ~/.bashrc
 echo "  Type 'coder' to launch the TUI."
