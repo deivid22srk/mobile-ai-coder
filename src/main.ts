@@ -727,6 +727,16 @@ export async function startAgentStream(chatId: number | null, isReconnect: boole
               appendAgentIndicator(payload.nickname, payload.agent_id);
               break;
 
+            case 'needs_continue':
+              statusText.textContent = `Task incomplete - say "continue" to proceed`;
+              ensureAssistantMessageBlock();
+              const continueDiv = document.createElement('div');
+              continueDiv.className = 'continue-hint';
+              continueDiv.innerHTML = `<span class="continue-icon">⏸</span><span>${payload.content}</span>`;
+              currentAssistantContentDiv!.appendChild(continueDiv);
+              shouldCloseStream = true;
+              break;
+
             case 'error':
               ensureAssistantMessageBlock();
               const errDiv = document.createElement('div');
