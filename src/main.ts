@@ -35,9 +35,20 @@ import { AppConfig, Chat, Message, SSEEvent, GitHubUser } from './types';
 export const chatMessages = document.getElementById('chat-messages') as HTMLDivElement;
 export const chatInput = document.getElementById('chat-input') as HTMLTextAreaElement;
 export const btnSend = document.getElementById('btn-send') as HTMLButtonElement;
+const btnCancel = document.getElementById('btn-cancel') as HTMLButtonElement;
 export const lblWorkspace = document.getElementById('lbl-workspace') as HTMLSpanElement;
 export const agentStatusBar = document.getElementById('agent-status-bar') as HTMLDivElement;
 export const statusText = document.getElementById('status-text') as HTMLSpanElement;
+
+// Slash Command
+export const slashPopover = document.getElementById('slash-popover') as HTMLDivElement;
+export const slashMenu = document.getElementById('slash-menu') as HTMLDivElement;
+export const slashSkillsPicker = document.getElementById('slash-skills-picker') as HTMLDivElement;
+export const slashSkillsList = document.getElementById('slash-skills-list') as HTMLDivElement;
+export const btnSlashBack = document.getElementById('btn-slash-back') as HTMLButtonElement;
+export const btnSlashNext = document.getElementById('btn-slash-next') as HTMLButtonElement;
+let slashSelectedSkills: string[] = [];
+let isSlashActive = false;
 
 // Drawer Elements
 export const chatDrawer = document.getElementById('chat-drawer') as HTMLElement;
@@ -94,6 +105,43 @@ export const githubStatusSub = document.getElementById('github-status-sub') as H
 export const githubStatusMessage = document.getElementById('github-status-message') as HTMLSpanElement;
 export const githubAvatar = document.getElementById('github-avatar') as HTMLImageElement;
 
+// Skills
+export const skillsList = document.getElementById('skills-list') as HTMLDivElement;
+export const btnRefreshSkills = document.getElementById('btn-refresh-skills') as HTMLButtonElement;
+export const skillsStatus = document.getElementById('skills-status') as HTMLSpanElement;
+export const btnNewSkill = document.getElementById('btn-new-skill') as HTMLButtonElement;
+export const btnImportSkill = document.getElementById('btn-import-skill') as HTMLButtonElement;
+export const modalCreateSkill = document.getElementById('modal-create-skill') as HTMLDivElement;
+export const modalImportSkill = document.getElementById('modal-import-skill') as HTMLDivElement;
+export const skillNameInput = document.getElementById('skill-name') as HTMLInputElement;
+export const skillDescInput = document.getElementById('skill-desc') as HTMLInputElement;
+export const skillContentInput = document.getElementById('skill-content') as HTMLTextAreaElement;
+export const btnSaveSkill = document.getElementById('btn-save-skill') as HTMLButtonElement;
+export const skillImportUrl = document.getElementById('skill-import-url') as HTMLInputElement;
+export const btnImportSkillConfirm = document.getElementById('btn-import-skill-confirm') as HTMLButtonElement;
+let availableSkills: Array<{ name: string; description: string }> = [];
+let activeSkills: string[] = [];
+
+// Agent Skills
+export const modalAgenteskills = document.getElementById('modal-agenteskills') as HTMLDivElement;
+export const agentSkillsSearch = document.getElementById('agenteskills-search') as HTMLInputElement;
+export const agentSkillsList = document.getElementById('agenteskills-list') as HTMLDivElement;
+export const agentSkillsTabs = document.getElementById('agenteskills-tabs') as HTMLDivElement;
+export const agentSkillsStatus = document.getElementById('agenteskills-status') as HTMLSpanElement;
+export const btnImportAgenteskills = document.getElementById('btn-import-agenteskills') as HTMLButtonElement;
+
+// Memory
+export const memoriesList = document.getElementById('memories-list') as HTMLDivElement;
+export const btnRefreshMemories = document.getElementById('btn-refresh-memories') as HTMLButtonElement;
+export const btnNewMemory = document.getElementById('btn-new-memory') as HTMLButtonElement;
+export const modalCreateMemory = document.getElementById('modal-create-memory') as HTMLDivElement;
+export const memoryNameInput = document.getElementById('memory-name') as HTMLInputElement;
+export const memoryContentInput = document.getElementById('memory-content') as HTMLTextAreaElement;
+export const memoryTypeSelect = document.getElementById('memory-type') as HTMLSelectElement;
+export const memoryScopeSelect = document.getElementById('memory-scope') as HTMLSelectElement;
+export const btnSaveMemory = document.getElementById('btn-save-memory') as HTMLButtonElement;
+export const memoriesStatus = document.getElementById('memories-status') as HTMLSpanElement;
+
 // File Explorer Panel
 export const btnRefreshFiles = document.getElementById('btn-refresh-files') as HTMLButtonElement;
 export const fileTreeContainer = document.getElementById('file-tree-container') as HTMLDivElement;
@@ -119,11 +167,17 @@ export let activeChatId: number | null = null;
 export function parseMarkdown(text: string): string {
   if (!text) return '';
 
-  // HTML escaping to avoid layout break
   let html = text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+
+  // Handle mermaid code blocks FIRST (before other code blocks)
+  html = html.replace(/```mermaid\n([\s\S]*?)```/g, (_match, code) => {
+    const id = 'mermaid-' + Math.random().toString(36).slice(2, 9);
+    const clean = code.trim();
+    return `<div class="mermaid-wrapper"><div class="mermaid" id="${id}">${clean}</div></div>`;
+  });
 
   // Handle multiline code blocks ```lang ... ```
   const codeBlockRegex = /```(\w*)\n([\s\S]*?)```/g;
@@ -150,13 +204,98 @@ export function parseMarkdown(text: string): string {
   // Handle inline code `code`
   html = html.replace(/`([^`\n]+)`/g, '<span class="code-span">$1</span>');
 
+  // Handle tables: | col1 | col2 |\n | --- | --- |\n | a | b |
+  const tableRegex = /^\|(.+)\|\n\|([-| :]+)\|\n((?:\|.+\|\n?)*)/gm;
+  html = html.replace(tableRegex, (_match, headerRow, alignRow, bodyRows) => {
+    const headers = headerRow.split('|').map((s: string) => s.trim()).filter(Boolean);
+    const aligns = alignRow.split('|').map((s: string) => {
+      const t = s.trim();
+      if (t.startsWith(':') && t.endsWith(':')) return 'center';
+      if (t.endsWith(':')) return 'right';
+      return 'left';
+    }).filter(Boolean);
+    const rows = bodyRows.trim().split('\n').map((r: string) =>
+      r.split('|').map((s: string) => s.trim()).filter(Boolean)
+    );
+
+    let tableHtml = '<div class="markdown-table-wrapper"><table class="markdown-table"><thead><tr>';
+    headers.forEach((h: string, i: number) => {
+      tableHtml += `<th style="text-align:${aligns[i] || 'left'}">${h}</th>`;
+    });
+    tableHtml += '</tr></thead><tbody>';
+    rows.forEach((row: string[]) => {
+      tableHtml += '<tr>';
+      row.forEach((cell: string, i: number) => {
+        tableHtml += `<td style="text-align:${aligns[i] || 'left'}">${cell}</td>`;
+      });
+      tableHtml += '</tr>';
+    });
+    tableHtml += '</tbody></table></div>';
+    return tableHtml;
+  });
+
+  // Handle horizontal rules
+  html = html.replace(/^---+\s*$/gm, '<hr>');
+  html = html.replace(/^\*\*\*+\s*$/gm, '<hr>');
+  html = html.replace(/^___+\s*$/gm, '<hr>');
+
+  // Handle blockquotes
+  html = html.replace(/^&gt;\s?(.*)$/gm, '<blockquote><p>$1</p></blockquote>');
+  // Collapse consecutive blockquotes
+  html = html.replace(/<\/blockquote>\n<blockquote>/g, '\n');
+
+  // Handle headings (must be after code blocks, before paragraphs)
+  html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+
+  // Handle unordered lists
+  html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
+  html = html.replace(/^\* (.+)$/gm, '<li>$1</li>');
+  // Handle ordered lists
+  html = html.replace(/^\d+\.\s(.+)$/gm, '<li>$1</li>');
+
+  // Wrap consecutive <li> in <ul> or <ol>
+  html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
+
+  // Handle inline formatting: bold (**text**), italic (*text*), links
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+  html = html.replace(/_([^_]+)_/g, '<em>$1</em>');
+
+  // Handle images ![alt](url)
+  html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" style="max-width:100%;border-radius:8px;margin:8px 0;" />');
+
+  // Handle links [text](url)
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+
   // Convert double newlines to paragraph structure, keeping linebreaks inside
+  // But skip wrapping in <p> if the content is already a block-level element
+  const blockLevelRegex = /^(<(div|table|blockquote|h[1-4]|hr|ul|ol|li|pre|p))/;
   html = html.split('\n\n').map(para => {
-    if (para.includes('code-block-wrapper')) return para; // Skip code blocks wrap
-    return `<p>${para.replace(/\n/g, '<br>')}</p>`;
+    const trimmed = para.trim();
+    if (!trimmed) return '';
+    if (blockLevelRegex.test(trimmed)) return trimmed;
+    return `<p>${trimmed.replace(/\n/g, '<br>')}</p>`;
   }).join('');
 
   return html;
+}
+
+export function renderMermaidDiagrams(container: HTMLElement) {
+  if (!container) return;
+  const mermaidEls = container.querySelectorAll('.mermaid');
+  if (mermaidEls.length > 0 && typeof (window as any).mermaid !== 'undefined') {
+    (mermaidEls as NodeListOf<HTMLElement>).forEach(el => {
+      try {
+        (window as any).mermaid.run({ nodes: [el] });
+      } catch (e) {
+        console.warn('Mermaid render error:', e);
+      }
+    });
+  }
 }
 
 export function scrollToBottom() {
@@ -360,8 +499,92 @@ export function appendUserMessage(content: string) {
   scrollToBottom();
 }
 
+let isStreamActive = false;
+let activeStreamChatId: number | null = null;
+
+async function cancelActiveStream() {
+  if (!isStreamActive || !activeStreamChatId) return;
+  try {
+    await fetch('/api/chat/cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chatId: activeStreamChatId })
+    });
+  } catch (_) {}
+}
+
 export async function sendMessage() {
-  const content = chatInput.value.trim();
+  // Cancel any active stream before starting a new one
+  if (isStreamActive) {
+    await cancelActiveStream();
+    // Small delay to let cancellation propagate
+    await new Promise(r => setTimeout(r, 200));
+  }
+
+  let content = chatInput.value.trim();
+  if (!content) return;
+
+  closeSlashPopover();
+
+  // Parse /skills command
+  const skillsMatch = content.match(/^\/skills\s+([\w-]+(?:\s*,\s*[\w-]+)*)/i);
+  let skillsToActivate: string[] = [];
+  if (skillsMatch) {
+    skillsToActivate = skillsMatch[1].split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+    content = content.replace(skillsMatch[0], '').trim();
+  }
+
+  // Parse $mention syntax ($skill-name inline references)
+  const mentionRegex = /\$([\w-]+)/g;
+  let mentionMatch;
+  const mentionedSkills: string[] = [];
+  while ((mentionMatch = mentionRegex.exec(content)) !== null) {
+    mentionedSkills.push(mentionMatch[1].toLowerCase());
+  }
+  if (mentionedSkills.length > 0) {
+    try {
+      const res = await fetch('/api/skills');
+      const { skills: allLocalSkills } = await res.json();
+      const localSkillNames = new Map(allLocalSkills.map((s: any) => [s.name.toLowerCase(), s]));
+      const inlineCtx: string[] = [];
+      for (const name of mentionedSkills) {
+        const skill = localSkillNames.get(name);
+        if (skill) {
+          if (!skillsToActivate.includes(name)) skillsToActivate.push(name);
+          inlineCtx.push(`[Skill "${skill.name}"]\n${skill.content}\n[/Skill]`);
+        }
+      }
+      if (inlineCtx.length > 0) {
+        content += '\n\n' + inlineCtx.join('\n\n');
+      }
+      // Remove $mention prefix from name references
+      content = content.replace(mentionRegex, (...args) => args[1]);
+    } catch (_) {}
+  }
+
+  // Activate skills for this chat if any
+  if (skillsToActivate.length > 0) {
+    const chatId = await ensureChat();
+    if (chatId) {
+      for (const name of skillsToActivate) {
+        try {
+          await fetch(`/api/chats/${chatId}/skills`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, active: true })
+          });
+        } catch (_) {}
+      }
+      if (!activeSkills.includes(skillsToActivate[0])) {
+        activeSkills.push(...skillsToActivate);
+      }
+    }
+  }
+
+  // If only the /skills command was typed with no additional text, use a default prompt
+  if (!content && skillsToActivate.length > 0) {
+    content = `Activate skills: ${skillsToActivate.join(', ')}`;
+  }
   if (!content) return;
 
   // Append user message
@@ -376,8 +599,11 @@ export async function sendMessage() {
 }
 
 export async function startAgentStream(chatId: number | null, isReconnect: boolean) {
+  isStreamActive = true;
+  activeStreamChatId = chatId;
   chatInput.disabled = true;
-  btnSend.disabled = true;
+  btnSend.classList.add('hidden');
+  btnCancel.classList.remove('hidden');
 
   // Show Agent Status Bar
   agentStatusBar.classList.remove('hidden');
@@ -462,6 +688,7 @@ export async function startAgentStream(chatId: number | null, isReconnect: boole
               assistantTextAccumulator += payload.content;
               currentAssistantContentDiv!.innerHTML = parseMarkdown(assistantTextAccumulator);
               highlightCodeBlocks(currentAssistantContentDiv!);
+              renderMermaidDiagrams(currentAssistantContentDiv!);
               scrollToBottom();
               break;
 
@@ -505,6 +732,10 @@ export async function startAgentStream(chatId: number | null, isReconnect: boole
               shouldCloseStream = true;
               break;
 
+            case 'cancelled':
+              shouldCloseStream = true;
+              break;
+
             case 'done':
               if (payload.chatId) {
                 activeChatId = payload.chatId;
@@ -532,12 +763,17 @@ export async function startAgentStream(chatId: number | null, isReconnect: boole
 
   } catch (err: any) {
     console.error("Chat streaming error:", err);
+    // Don't show error UI for cancellation
+    if (err.name === 'AbortError') return;
     ensureAssistantMessageBlock();
     currentAssistantContentDiv!.innerHTML += `<p style="color:#C4622D; font-family:monospace;">System Error: ${err.message}</p>`;
     scrollToBottom();
   } finally {
+    isStreamActive = false;
+    activeStreamChatId = null;
     chatInput.disabled = false;
-    btnSend.disabled = false;
+    btnCancel.classList.add('hidden');
+    btnSend.classList.remove('hidden');
     agentStatusBar.classList.add('hidden');
     chatInput.focus();
     loadChats(); // Refresh drawer
@@ -733,6 +969,7 @@ export function openSettingsScreen() {
   const body = screenSettings ? screenSettings.querySelector('.settings-body') as HTMLElement : null;
   if (body) body.scrollTop = 0;
   refreshGithubStatus();
+  loadSkills();
   switchSettingsCategory('llm'); // Default category
 }
 
@@ -751,7 +988,7 @@ export function switchSettingsCategory(categoryId: string) {
   });
 
   // Update section visibility
-  const categories = ['llm', 'github', 'general', 'tools'];
+  const categories = ['llm', 'memory', 'skills', 'github', 'general', 'tools'];
   categories.forEach(cat => {
     const section = document.getElementById(`settings-cat-${cat}`);
     if (section) {
@@ -759,6 +996,475 @@ export function switchSettingsCategory(categoryId: string) {
       else section.classList.add('hidden');
     }
   });
+}
+
+// Skills Functions
+export async function loadSkills() {
+  if (!skillsList) return;
+  try {
+    const skillsRes = await fetch('/api/skills');
+    const skillsData = await skillsRes.json();
+    availableSkills = skillsData.skills || [];
+
+    const targetChatId = await ensureChat();
+    if (targetChatId) {
+      const activeRes = await fetch(`/api/chats/${targetChatId}/skills`);
+      const activeData = await activeRes.json();
+      activeSkills = activeData.active || [];
+    } else {
+      activeSkills = [];
+    }
+
+    renderSkillsList();
+    if (skillsStatus && targetChatId) {
+      skillsStatus.textContent = `Skills for chat #${targetChatId}`;
+      skillsStatus.className = 'settings-test-status';
+    }
+  } catch (err) {
+    console.error('Failed to load skills:', err);
+    if (skillsList) {
+      skillsList.innerHTML = '<div class="skills-empty">Could not load skills. Check server connection.</div>';
+    }
+  }
+}
+
+function renderSkillsList() {
+  if (!skillsList) return;
+  skillsList.innerHTML = '';
+
+  if (availableSkills.length === 0) {
+    skillsList.innerHTML = '<div class="skills-empty">No skills found. Add SKILL.md files to <code>.mobile-ai-coder/skills/</code> directory and click Refresh.</div>';
+    return;
+  }
+
+  availableSkills.forEach(skill => {
+    const isActive = activeSkills.includes(skill.name);
+
+    const item = document.createElement('div');
+    item.className = `skill-item${isActive ? ' is-active' : ''}`;
+
+    const info = document.createElement('div');
+    info.className = 'skill-info';
+
+    const name = document.createElement('span');
+    name.className = 'skill-name';
+    name.textContent = skill.name;
+
+    const desc = document.createElement('span');
+    desc.className = 'skill-desc';
+    desc.textContent = skill.description || 'No description';
+
+    info.appendChild(name);
+    info.appendChild(desc);
+
+    const label = document.createElement('label');
+    label.className = 'skill-toggle';
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = isActive;
+    checkbox.addEventListener('change', () => toggleSkill(skill.name, checkbox.checked));
+
+    const track = document.createElement('span');
+    track.className = 'toggle-track';
+
+    label.appendChild(checkbox);
+    label.appendChild(track);
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'skill-delete-btn';
+    deleteBtn.title = 'Delete skill';
+    deleteBtn.innerHTML = '&times;';
+    deleteBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      deleteSkill(skill.name);
+    });
+
+    item.appendChild(info);
+    item.appendChild(label);
+    item.appendChild(deleteBtn);
+    skillsList.appendChild(item);
+  });
+}
+
+async function ensureChat(): Promise<number | null> {
+  if (activeChatId) return activeChatId;
+  const saved = localStorage.getItem('activeChatId');
+  if (saved) return parseInt(saved);
+  try {
+    const res = await fetch('/api/chats', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'New Chat' })
+    });
+    const chat = await res.json();
+    if (chat.id) {
+      activeChatId = chat.id;
+      localStorage.setItem('activeChatId', chat.id.toString());
+      return chat.id;
+    }
+  } catch (err) {
+    console.error('Failed to create chat:', err);
+  }
+  return null;
+}
+
+async function toggleSkill(name: string, active: boolean) {
+  const chatId = await ensureChat();
+  if (!chatId) {
+    if (skillsStatus) {
+      skillsStatus.textContent = 'Could not create a chat to attach skill to';
+      skillsStatus.className = 'settings-test-status is-error';
+    }
+    return;
+  }
+  try {
+    const res = await fetch(`/api/chats/${chatId}/skills`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, active })
+    });
+    const data = await res.json();
+    if (data.success) {
+      if (active) {
+        if (!activeSkills.includes(name)) activeSkills.push(name);
+      } else {
+        activeSkills = activeSkills.filter(s => s !== name);
+      }
+      if (activeChatId !== chatId) activeChatId = chatId;
+      localStorage.setItem('activeChatId', chatId.toString());
+      renderSkillsList();
+      if (skillsStatus) {
+        skillsStatus.textContent = active ? `Skill "${name}" activated for this chat` : `Skill "${name}" deactivated`;
+        skillsStatus.className = 'settings-test-status is-success';
+        setTimeout(() => { if (skillsStatus) { skillsStatus.textContent = ''; skillsStatus.className = 'settings-test-status'; } }, 2000);
+      }
+    } else {
+      if (skillsStatus) {
+        skillsStatus.textContent = 'Failed to toggle skill';
+        skillsStatus.className = 'settings-test-status is-error';
+      }
+    }
+  } catch (err) {
+    console.error('Failed to toggle skill:', err);
+    if (skillsStatus) {
+      skillsStatus.textContent = 'Error connecting to server';
+      skillsStatus.className = 'settings-test-status is-error';
+    }
+  }
+}
+
+// Create, Import, Delete Skills
+export async function createSkillFromUI() {
+  const name = (skillNameInput?.value || '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  const description = (skillDescInput?.value || '').trim();
+  const content = (skillContentInput?.value || '').trim();
+  if (!name || !content) {
+    if (skillsStatus) { skillsStatus.textContent = 'Name and content are required'; skillsStatus.className = 'settings-test-status is-error'; }
+    return;
+  }
+  if (btnSaveSkill) { btnSaveSkill.disabled = true; btnSaveSkill.textContent = 'Creating...'; }
+  try {
+    const res = await fetch('/api/skills', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, description, content })
+    });
+    const data = await res.json();
+    if (data.success) {
+      if (skillsStatus) { skillsStatus.textContent = `Skill "${name}" created!`; skillsStatus.className = 'settings-test-status is-success'; }
+      toggleModal(modalCreateSkill, false);
+      if (skillNameInput) skillNameInput.value = '';
+      if (skillDescInput) skillDescInput.value = '';
+      if (skillContentInput) skillContentInput.value = '';
+      loadSkills();
+    } else {
+      if (skillsStatus) { skillsStatus.textContent = data.error || 'Failed to create skill'; skillsStatus.className = 'settings-test-status is-error'; }
+    }
+  } catch (err: any) {
+    if (skillsStatus) { skillsStatus.textContent = 'Error: ' + err.message; skillsStatus.className = 'settings-test-status is-error'; }
+  } finally {
+    if (btnSaveSkill) { btnSaveSkill.disabled = false; btnSaveSkill.textContent = 'Create Skill'; }
+  }
+}
+
+export async function importSkillFromURL() {
+  const url = (skillImportUrl?.value || '').trim();
+  if (!url) {
+    if (skillsStatus) { skillsStatus.textContent = 'URL is required'; skillsStatus.className = 'settings-test-status is-error'; }
+    return;
+  }
+  if (btnImportSkillConfirm) { btnImportSkillConfirm.disabled = true; btnImportSkillConfirm.textContent = 'Importing...'; }
+  try {
+    const res = await fetch('/api/skills/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    });
+    const data = await res.json();
+    if (data.success) {
+      const count = data.imported?.length || 0;
+      if (skillsStatus) { skillsStatus.textContent = `${count} skill(s) imported!`; skillsStatus.className = 'settings-test-status is-success'; }
+      toggleModal(modalImportSkill, false);
+      if (skillImportUrl) skillImportUrl.value = '';
+      loadSkills();
+    } else {
+      if (skillsStatus) { skillsStatus.textContent = data.error || 'Failed to import skill'; skillsStatus.className = 'settings-test-status is-error'; }
+    }
+  } catch (err: any) {
+    if (skillsStatus) { skillsStatus.textContent = 'Error: ' + err.message; skillsStatus.className = 'settings-test-status is-error'; }
+  } finally {
+    if (btnImportSkillConfirm) { btnImportSkillConfirm.disabled = false; btnImportSkillConfirm.textContent = 'Import'; }
+  }
+}
+
+export async function deleteSkill(name: string) {
+  if (!confirm(`Delete skill "${name}"?`)) return;
+  try {
+    const res = await fetch(`/api/skills/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (data.success) {
+      if (skillsStatus) { skillsStatus.textContent = `Skill "${name}" deleted`; skillsStatus.className = 'settings-test-status is-success'; }
+      loadSkills();
+    } else {
+      if (skillsStatus) { skillsStatus.textContent = data.error || 'Failed to delete'; skillsStatus.className = 'settings-test-status is-error'; }
+    }
+  } catch (err: any) {
+    if (skillsStatus) { skillsStatus.textContent = 'Error: ' + err.message; skillsStatus.className = 'settings-test-status is-error'; }
+  }
+}
+
+// Memory Functions
+export async function loadMemories() {
+  if (!memoriesList) return;
+  try {
+    const res = await fetch('/api/memories?scope=global');
+    const data = await res.json();
+    const memories = data.memories || [];
+    renderMemoriesList(memories);
+  } catch (err) {
+    console.error('Failed to load memories:', err);
+    if (memoriesList) {
+      memoriesList.innerHTML = '<div class="skills-empty">Could not load memories.</div>';
+    }
+  }
+}
+
+function renderMemoriesList(memories: Array<{ id: number; name: string; content: string; type: string; tags: string; updatedAt: string }>) {
+  if (!memoriesList) return;
+  memoriesList.innerHTML = '';
+
+  if (memories.length === 0) {
+    memoriesList.innerHTML = '<div class="skills-empty">No memories yet. The agent can save memories using the <code>memory_save</code> tool, or you can create one manually.</div>';
+    return;
+  }
+
+  memories.forEach(mem => {
+    const item = document.createElement('div');
+    item.className = 'skill-item';
+
+    const info = document.createElement('div');
+    info.className = 'skill-info';
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'skill-name';
+    nameSpan.textContent = mem.name;
+
+    const typeSpan = document.createElement('span');
+    typeSpan.style.cssText = 'font-size:0.65rem;color:var(--color-accent);font-family:monospace;background:var(--color-bg-card);padding:1px 6px;border-radius:4px;margin-left:6px;';
+    typeSpan.textContent = mem.type || 'fact';
+
+    const contentDiv = document.createElement('div');
+    contentDiv.style.cssText = 'font-size:0.75rem;color:var(--color-text-sub);margin-top:4px;white-space:pre-wrap;word-break:break-word;max-height:60px;overflow:hidden;';
+    contentDiv.textContent = mem.content;
+
+    info.appendChild(nameSpan);
+    info.appendChild(typeSpan);
+    info.appendChild(contentDiv);
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'skill-delete-btn';
+    deleteBtn.title = 'Delete memory';
+    deleteBtn.innerHTML = '&times;';
+    deleteBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (confirm(`Delete memory "${mem.name}"?`)) deleteMemory(mem.id);
+    });
+
+    item.appendChild(info);
+    item.appendChild(deleteBtn);
+    memoriesList.appendChild(item);
+  });
+}
+
+async function deleteMemory(id: number) {
+  try {
+    const res = await fetch(`/api/memories/${id}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (data.success) {
+      if (memoriesStatus) {
+        memoriesStatus.textContent = 'Memory deleted';
+        memoriesStatus.className = 'settings-test-status is-success';
+        setTimeout(() => { if (memoriesStatus) { memoriesStatus.textContent = ''; memoriesStatus.className = 'settings-test-status'; } }, 2000);
+      }
+      loadMemories();
+    }
+  } catch (err) {
+    console.error('Failed to delete memory:', err);
+  }
+}
+
+export async function createMemoryFromUI() {
+  const name = (memoryNameInput?.value || '').trim().toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  const content = (memoryContentInput?.value || '').trim();
+  const type = memoryTypeSelect?.value || 'fact';
+  const scope = memoryScopeSelect?.value || 'global';
+
+  if (!name || !content) {
+    if (memoriesStatus) { memoriesStatus.textContent = 'Name and content are required'; memoriesStatus.className = 'settings-test-status is-error'; }
+    return;
+  }
+
+  if (btnSaveMemory) { btnSaveMemory.disabled = true; btnSaveMemory.textContent = 'Saving...'; }
+
+  try {
+    const res = await fetch('/api/memories', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, content, type, scope })
+    });
+    const data = await res.json();
+    if (data.success) {
+      if (memoriesStatus) { memoriesStatus.textContent = `Memory "${name}" saved!`; memoriesStatus.className = 'settings-test-status is-success'; }
+      toggleModal(modalCreateMemory, false);
+      if (memoryNameInput) memoryNameInput.value = '';
+      if (memoryContentInput) memoryContentInput.value = '';
+      loadMemories();
+    } else {
+      if (memoriesStatus) { memoriesStatus.textContent = data.error || 'Failed to save memory'; memoriesStatus.className = 'settings-test-status is-error'; }
+    }
+  } catch (err: any) {
+    if (memoriesStatus) { memoriesStatus.textContent = 'Error: ' + err.message; memoriesStatus.className = 'settings-test-status is-error'; }
+  } finally {
+    if (btnSaveMemory) { btnSaveMemory.disabled = false; btnSaveMemory.textContent = 'Save Memory'; }
+  }
+}
+
+// Agent Skills Catalog Functions
+let agentSkillsCatalog: { curated: string[]; system: string[]; experimental: string[] } = { curated: [], system: [], experimental: [] };
+let agentSkillsActiveTab = 'curated';
+
+export async function loadAgentSkillsCatalog() {
+  if (!agentSkillsList) return;
+  agentSkillsList.innerHTML = '<div class="model-picker-empty">Loading catalog...</div>';
+  try {
+    const res = await fetch('/api/skills/catalog');
+    agentSkillsCatalog = await res.json();
+    // Update tab labels with counts
+    if (agentSkillsTabs) {
+      const tabs = agentSkillsTabs.querySelectorAll('[data-askill-tab]');
+      tabs.forEach(tab => {
+        const cat = (tab as HTMLElement).dataset.askillTab || '';
+        const count = (agentSkillsCatalog[cat] || []).length;
+        const base = cat.charAt(0).toUpperCase() + cat.slice(1);
+        tab.textContent = `${base} (${count})`;
+        // Auto-switch to first tab that has results if current tab is empty
+        if (count === 0 && cat === agentSkillsActiveTab) {
+          const firstNonEmpty = tabs.find(t => (agentSkillsCatalog[(t as HTMLElement).dataset.askillTab || ''] || []).length > 0);
+          if (firstNonEmpty) {
+            tabs.forEach(t => t.classList.remove('active'));
+            firstNonEmpty.classList.add('active');
+            agentSkillsActiveTab = (firstNonEmpty as HTMLElement).dataset.askillTab || 'curated';
+          }
+        }
+      });
+    }
+    renderAgentSkillsList('');
+  } catch (err) {
+    agentSkillsList.innerHTML = '<div class="model-picker-empty" style="color:var(--color-accent);">Failed to load catalog. Check connection.</div>';
+  }
+}
+
+function renderAgentSkillsList(filter: string) {
+  if (!agentSkillsList) return;
+  const query = (filter || '').trim().toLowerCase();
+  const skills = agentSkillsCatalog[agentSkillsActiveTab] || [];
+
+  let filtered = skills;
+  if (query) {
+    filtered = skills.filter(s => s.includes(query));
+  }
+
+  agentSkillsList.innerHTML = '';
+
+  if (filtered.length === 0) {
+    agentSkillsList.innerHTML = `<div class="model-picker-empty">${query ? 'No skills match "' + filter + '"' : 'No skills in this category.'}</div>`;
+    return;
+  }
+
+  filtered.forEach(name => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'model-picker-item';
+    item.dataset.name = name;
+
+    const nameSpan = document.createElement('span');
+    nameSpan.className = 'model-picker-item-name';
+    nameSpan.textContent = name;
+
+    const importBtn = document.createElement('span');
+    importBtn.className = 'model-picker-item-check';
+    importBtn.textContent = 'Import';
+    importBtn.style.color = 'var(--color-accent)';
+    importBtn.style.fontSize = '0.7rem';
+    importBtn.style.fontWeight = '500';
+
+    item.appendChild(nameSpan);
+    item.appendChild(importBtn);
+
+    item.addEventListener('click', () => importAgentSkill(name, agentSkillsActiveTab));
+    agentSkillsList.appendChild(item);
+  });
+}
+
+async function importAgentSkill(name: string, category: string) {
+  if (!confirm(`Import agent skill "${name}" from openai/skills ${category}?`)) return;
+  if (agentSkillsStatus) {
+    agentSkillsStatus.textContent = `Importing "${name}"...`;
+    agentSkillsStatus.className = 'settings-test-status';
+  }
+  try {
+    const res = await fetch('/api/skills/import-from-catalog', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, category })
+    });
+    const data = await res.json();
+    if (data.success) {
+      if (agentSkillsStatus) {
+        agentSkillsStatus.textContent = `"${name}" imported!`;
+        agentSkillsStatus.className = 'settings-test-status is-success';
+        setTimeout(() => { if (agentSkillsStatus) { agentSkillsStatus.textContent = ''; agentSkillsStatus.className = 'settings-test-status'; } }, 3000);
+      }
+      loadSkills(); // Refresh skills list
+    } else {
+      if (agentSkillsStatus) {
+        agentSkillsStatus.textContent = data.error || 'Import failed';
+        agentSkillsStatus.className = 'settings-test-status is-error';
+      }
+    }
+  } catch (err: any) {
+    if (agentSkillsStatus) {
+      agentSkillsStatus.textContent = 'Error: ' + err.message;
+      agentSkillsStatus.className = 'settings-test-status is-error';
+    }
+  }
+}
+
+function openAgentSkillsCatalog() {
+  toggleModal(modalAgenteskills, true);
+  if (agentSkillsSearch) agentSkillsSearch.value = '';
+  loadAgentSkillsCatalog();
 }
 
 export function openModelPicker() {
@@ -1295,6 +2001,7 @@ function renderConversation() {
         contentDiv.className = 'msg-content';
         contentDiv.innerHTML = parseMarkdown(msg.content);
         highlightCodeBlocks(contentDiv);
+        renderMermaidDiagrams(contentDiv);
         msgDiv.appendChild(contentDiv);
         chatMessages.appendChild(msgDiv);
       }
@@ -1325,15 +2032,128 @@ export function startNewChat() {
   localStorage.removeItem('activeChatId');
   conversationHistory = [];
   chatMessages.innerHTML = `
-    <div class="message system-message">
+    <div class="message system-message welcome-message">
       <div class="msg-content">
-        <strong>Welcome to Coder!</strong><br>
-        Ask anything or type a command to begin.
+        <div class="welcome-icon">
+          <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+            <path d="M2 17l10 5 10-5"></path>
+            <path d="M2 12l10 5 10-5"></path>
+          </svg>
+        </div>
+        <h3 class="welcome-title">Welcome to <span style="color: var(--color-accent);">*coder</span></h3>
+        <p class="welcome-desc">Your AI pair programmer. I can edit files, clone repos, run commands, and more.</p>
+        <div class="welcome-features">
+          <span class="welcome-feature">&#9889; Edit files</span>
+          <span class="welcome-feature">&#128194; Browse workspace</span>
+          <span class="welcome-feature">&#128279; Git & GitHub</span>
+          <span class="welcome-feature">&#128187; Run commands</span>
+        </div>
+        <p class="workspace-label-text">Workspace: <span id="lbl-workspace" class="code-span">Loading...</span></p>
       </div>
     </div>
   `;
   if (agentStatusBar) agentStatusBar.classList.add('hidden');
+  const newLbl = document.getElementById('lbl-workspace') as HTMLSpanElement;
+  if (newLbl && appConfig) newLbl.textContent = appConfig.workspacePath;
   toggleDrawer(false);
+}
+
+// Slash Command Functions
+function handleSlashInput() {
+  const val = chatInput?.value || '';
+  if (val === '/' && !isSlashActive) {
+    isSlashActive = true;
+    slashMenu?.classList.remove('hidden');
+    slashSkillsPicker?.classList.add('hidden');
+    slashPopover?.classList.remove('hidden');
+  } else if (val !== '/' && isSlashActive && slashMenu?.classList.contains('hidden') === false) {
+    // If user typed more than just "/", close if it's not a slash command
+    if (!val.startsWith('/')) closeSlashPopover();
+  }
+}
+
+function closeSlashPopover() {
+  isSlashActive = false;
+  slashPopover?.classList.add('hidden');
+  slashMenu?.classList.remove('hidden');
+  slashSkillsPicker?.classList.add('hidden');
+  slashSelectedSkills = [];
+}
+
+function openSlashSkillsPicker() {
+  if (!slashSkillsList) return;
+  slashMenu?.classList.add('hidden');
+  slashSkillsPicker?.classList.remove('hidden');
+
+  // Load available skills
+  fetch('/api/skills').then(r => r.json()).then(data => {
+    const skills = data.skills || [];
+    slashSkillsList.innerHTML = '';
+    if (skills.length === 0) {
+      slashSkillsList.innerHTML = '<div style="padding:16px;text-align:center;color:var(--color-text-muted);font-size:0.82rem;">No skills available. Create one in Settings.</div>';
+      return;
+    }
+    slashSelectedSkills = [];
+    skills.forEach((skill: { name: string; description: string }) => {
+      const item = document.createElement('div');
+      item.className = 'slash-skill-item';
+      item.dataset.name = skill.name;
+
+      const box = document.createElement('span');
+      box.className = 'check-box';
+      box.textContent = '\u2713';
+
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'skill-name';
+      nameSpan.textContent = skill.name;
+
+      const descSpan = document.createElement('span');
+      descSpan.className = 'skill-desc';
+      descSpan.textContent = skill.description || '';
+
+      item.appendChild(box);
+      item.appendChild(nameSpan);
+      item.appendChild(descSpan);
+
+      item.addEventListener('click', () => {
+        item.classList.toggle('is-checked');
+        const checked = item.classList.contains('is-checked');
+        if (checked) {
+          if (!slashSelectedSkills.includes(skill.name)) slashSelectedSkills.push(skill.name);
+        } else {
+          slashSelectedSkills = slashSelectedSkills.filter(s => s !== skill.name);
+        }
+      });
+
+      slashSkillsList.appendChild(item);
+    });
+  }).catch(() => {
+    slashSkillsList.innerHTML = '<div style="padding:16px;text-align:center;color:var(--color-accent);font-size:0.82rem;">Failed to load skills.</div>';
+  });
+}
+
+function confirmSlashSkills() {
+  // Update skills display
+  if (slashSelectedSkills.length === 0) {
+    if (slashSkillsList) {
+      const emptyMsg = slashSkillsList.querySelector('.slash-skill-item');
+      if (!emptyMsg) return;
+    }
+    return;
+  }
+
+  // Insert /skills command into input
+  const cmd = `/skills ${slashSelectedSkills.join(', ')}`;
+  if (chatInput) {
+    chatInput.value = cmd + ' ';
+    chatInput.focus();
+    autoResizeTextarea(chatInput);
+    // Move cursor to end
+    chatInput.selectionStart = chatInput.selectionEnd = chatInput.value.length;
+  }
+
+  closeSlashPopover();
 }
 
 // Event Listeners Setup
@@ -1381,21 +2201,80 @@ export function setupEventListeners() {
   });
 
   btnSend?.addEventListener('click', sendMessage);
+  btnCancel?.addEventListener('click', cancelActiveStream);
   chatInput?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      if (isSlashActive) {
+        closeSlashPopover();
+      }
       sendMessage();
+    }
+    if (e.key === 'Escape') {
+      closeSlashPopover();
     }
   });
   chatInput?.addEventListener('focus', () => {
     setTimeout(scrollToBottom, 250);
   });
-  chatInput?.addEventListener('input', () => autoResizeTextarea(chatInput));
+  chatInput?.addEventListener('input', () => {
+    autoResizeTextarea(chatInput);
+    handleSlashInput();
+  });
+
+  // Slash command option click
+  document.querySelectorAll('.slash-option').forEach(el => {
+    el.addEventListener('click', () => {
+      const cmd = (el as HTMLElement).dataset.slash;
+      if (cmd === 'skills') openSlashSkillsPicker();
+      if (cmd === 'agenteskills') { closeSlashPopover(); openAgentSkillsCatalog(); }
+    });
+  });
+  btnSlashBack?.addEventListener('click', () => {
+    slashMenu?.classList.remove('hidden');
+    slashSkillsPicker?.classList.add('hidden');
+  });
+  btnSlashNext?.addEventListener('click', confirmSlashSkills);
 
   btnRefreshFiles?.addEventListener('click', loadWorkspaceFiles);
   btnSaveFile?.addEventListener('click', saveActiveFile);
   btnSettingsSave?.addEventListener('click', saveSettings);
   btnSettingsTest?.addEventListener('click', testApiConnection);
+  btnRefreshSkills?.addEventListener('click', () => { loadSkills(); if (skillsStatus) { skillsStatus.textContent = 'Skills refreshed!'; skillsStatus.className = 'settings-test-status is-success'; setTimeout(() => { if (skillsStatus) { skillsStatus.textContent = ''; skillsStatus.className = 'settings-test-status'; } }, 2000); } });
+  btnNewSkill?.addEventListener('click', () => toggleModal(modalCreateSkill, true));
+  btnImportSkill?.addEventListener('click', () => toggleModal(modalImportSkill, true));
+  btnSaveSkill?.addEventListener('click', createSkillFromUI);
+  btnImportSkillConfirm?.addEventListener('click', importSkillFromURL);
+  btnRefreshMemories?.addEventListener('click', () => { loadMemories(); if (memoriesStatus) { memoriesStatus.textContent = 'Refreshed!'; memoriesStatus.className = 'settings-test-status is-success'; setTimeout(() => { if (memoriesStatus) { memoriesStatus.textContent = ''; memoriesStatus.className = 'settings-test-status'; } }, 2000); } });
+  btnNewMemory?.addEventListener('click', () => toggleModal(modalCreateMemory, true));
+  btnSaveMemory?.addEventListener('click', createMemoryFromUI);
+  btnImportAgenteskills?.addEventListener('click', openAgentSkillsCatalog);
+
+  // Agent Skills catalog search
+  agentSkillsSearch?.addEventListener('input', () => {
+    renderAgentSkillsList(agentSkillsSearch.value);
+  });
+
+  // Agent Skills tab switching
+  agentSkillsTabs?.addEventListener('click', (e) => {
+    const tab = (e.target as HTMLElement).closest('[data-askill-tab]') as HTMLElement;
+    if (!tab) return;
+    agentSkillsTabs.querySelectorAll('.provider-tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    agentSkillsActiveTab = tab.dataset.askillTab || 'curated';
+    if (agentSkillsSearch) agentSkillsSearch.value = '';
+    renderAgentSkillsList('');
+  });
+  // Close modals via data-close attributes
+  document.querySelectorAll('[data-close]').forEach(el => {
+    el.addEventListener('click', () => {
+      const targetId = (el as HTMLElement).dataset.close;
+      if (targetId) {
+        const modal = document.getElementById(targetId);
+        if (modal) toggleModal(modal, false);
+      }
+    });
+  });
   btnGithubConnect?.addEventListener('click', connectGithub);
   btnGithubDisconnect?.addEventListener('click', disconnectGithub);
 
@@ -1434,7 +2313,11 @@ export function setupEventListeners() {
   document.querySelectorAll('.settings-nav-item').forEach(btn => {
     btn.addEventListener('click', () => {
       const cat = (btn as HTMLElement).dataset.category;
-      if (cat) switchSettingsCategory(cat);
+      if (cat) {
+        switchSettingsCategory(cat);
+        if (cat === 'skills') loadSkills();
+        if (cat === 'memory') loadMemories();
+      }
     });
   });
 }

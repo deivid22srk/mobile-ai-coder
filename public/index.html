@@ -3,13 +3,15 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <title>Claude Code Mobile Agent</title>
+  <title>*coder — mobile AI agent</title>
   <!-- Google Fonts: Outfit for UI, JetBrains Mono for Code -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;1,400&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="highlight.css">
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <script>mermaid.initialize({startOnLoad:false,theme:'dark',themeVariables:{primaryColor:'#c4622d',primaryTextColor:'#fff',primaryBorderColor:'#c4622d',lineColor:'#c4622d',secondaryColor:'#1a1a2e',tertiaryColor:'#27272a'}})</script>
 </head>
 <body>
 
@@ -64,11 +66,24 @@
     <main class="chat-container">
       <div id="chat-messages" class="messages-list">
         <!-- System Welcome Message -->
-        <div class="message system-message">
+        <div class="message system-message welcome-message">
           <div class="msg-content">
-            <p><strong>Welcome to Claude Code Mobile!</strong></p>
-            <p>I can edit files, list files, clone repositories, and run shell commands in the workspace.</p>
-            <p class="workspace-label-text">Current workspace: <span id="lbl-workspace" class="code-span">Loading...</span></p>
+            <div class="welcome-icon">
+              <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2L2 7l10 5 10-5-10-5z"></path>
+                <path d="M2 17l10 5 10-5"></path>
+                <path d="M2 12l10 5 10-5"></path>
+              </svg>
+            </div>
+            <h3 class="welcome-title">Welcome to <span style="color: var(--color-accent);">*coder</span></h3>
+            <p class="welcome-desc">Your AI pair programmer. I can edit files, clone repos, run commands, and more.</p>
+            <div class="welcome-features">
+              <span class="welcome-feature">&#9889; Edit files</span>
+              <span class="welcome-feature">&#128194; Browse workspace</span>
+              <span class="welcome-feature">&#128279; Git & GitHub</span>
+              <span class="welcome-feature">&#128187; Run commands</span>
+            </div>
+            <p class="workspace-label-text">Workspace: <span id="lbl-workspace" class="code-span">Loading...</span></p>
           </div>
         </div>
       </div>
@@ -82,11 +97,38 @@
 
     <!-- Bottom Input Panel -->
     <footer class="app-footer">
+      <!-- Slash Command Popover -->
+      <div id="slash-popover" class="slash-popover hidden">
+        <div id="slash-menu" class="slash-menu">
+          <div class="slash-header">Commands</div>
+          <button class="slash-option" data-slash="skills">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+            <span>Skills</span>
+            <span class="slash-desc">Activate skills for this message</span>
+          </button>
+          <button class="slash-option" data-slash="agenteskills">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+            <span>Agenteskills</span>
+            <span class="slash-desc">Browse and import skills from the OpenAI catalog</span>
+          </button>
+        </div>
+        <div id="slash-skills-picker" class="slash-skills-picker hidden">
+          <div class="slash-header">Select Skills</div>
+          <div id="slash-skills-list" class="slash-skills-list"></div>
+          <div class="slash-footer">
+            <button id="btn-slash-back" class="mini-btn">Back</button>
+            <button id="btn-slash-next" class="mini-btn primary-btn-style">Next</button>
+          </div>
+        </div>
+      </div>
       <div class="input-row">
         <span class="prompt-arrow">&gt;</span>
         <textarea id="chat-input" placeholder="Type a command or ask a question..." rows="1"></textarea>
-        <button id="btn-send" class="primary-button" title="Send message">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+        <button id="btn-send" title="Send message">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"></path><path d="M22 2L15 22L11 13L2 9L22 2Z"></path></svg>
+        </button>
+        <button id="btn-cancel" title="Cancel response" class="hidden">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
         </button>
       </div>
     </footer>
@@ -106,6 +148,8 @@
     <div class="settings-container" style="display: flex; flex: 1; overflow: hidden;">
       <nav class="settings-nav" style="width: 200px; border-right: 1px solid var(--color-border); padding: 16px; display: flex; flex-direction: column; gap: 8px;">
         <button class="settings-nav-item active" data-category="llm">LLM Config</button>
+        <button class="settings-nav-item" data-category="memory">Memory</button>
+        <button class="settings-nav-item" data-category="skills">Skills</button>
         <button class="settings-nav-item" data-category="github">GitHub</button>
         <button class="settings-nav-item" data-category="general">General</button>
         <button class="settings-nav-item" data-category="tools">Tools</button>
@@ -150,6 +194,50 @@
         <div class="settings-action-row">
           <button id="btn-settings-test" class="secondary-button settings-block-btn">Test API Connection</button>
           <span id="settings-test-status" class="settings-test-status"></span>
+        </div>
+      </section>
+
+      <!-- Section: Memory -->
+      <section id="settings-cat-memory" class="settings-section hidden">
+        <div class="settings-section-header">
+          <span class="settings-section-eyebrow">Persistence</span>
+          <h3 class="settings-section-title">Memory</h3>
+          <p class="settings-section-desc">The agent can save and recall persistent memories across sessions. Global memories are injected into every conversation.</p>
+        </div>
+        <div class="settings-card">
+          <div class="skills-toolbar">
+            <button id="btn-new-memory" class="mini-btn primary-btn-style">+ New Memory</button>
+            <button id="btn-refresh-memories" class="mini-btn">Refresh</button>
+          </div>
+          <div id="memories-list" class="skills-list">
+            <span class="loading-indicator">Loading memories...</span>
+          </div>
+        </div>
+        <div class="settings-action-row">
+          <span id="memories-status" class="settings-test-status"></span>
+        </div>
+      </section>
+
+      <!-- Section: Skills -->
+      <section id="settings-cat-skills" class="settings-section hidden">
+        <div class="settings-section-header">
+          <span class="settings-section-eyebrow">Capabilities</span>
+          <h3 class="settings-section-title">Skills</h3>
+          <p class="settings-section-desc">Activate skills to give the agent specialized instructions for specific tasks. Skills are loaded from <code>.mobile-ai-coder/skills/</code>.</p>
+        </div>
+        <div class="settings-card">
+          <div class="skills-toolbar">
+            <button id="btn-new-skill" class="mini-btn primary-btn-style">+ New Skill</button>
+            <button id="btn-import-skill" class="mini-btn">Import URL</button>
+            <button id="btn-import-agenteskills" class="mini-btn">Import Agent</button>
+            <button id="btn-refresh-skills" class="mini-btn">Refresh</button>
+          </div>
+          <div id="skills-list" class="skills-list">
+            <span class="loading-indicator">Loading skills...</span>
+          </div>
+        </div>
+        <div class="settings-action-row">
+          <span id="skills-status" class="settings-test-status"></span>
         </div>
       </section>
 
@@ -305,7 +393,122 @@
     </div>
   </div>
 
-  <!-- Thinking Process Modal (removed) -->
+  <!-- Create Skill Modal -->
+  <div id="modal-create-skill" class="modal-overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal-card" style="max-width:560px;">
+      <div class="modal-header">
+        <h3>New Skill</h3>
+        <button class="close-button" data-close="modal-create-skill">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="skill-name">Skill Name</label>
+          <input type="text" id="skill-name" placeholder="e.g. code-review" autocomplete="off">
+          <span class="field-help">Lowercase, hyphens only. Will be used as folder name.</span>
+        </div>
+        <div class="form-group">
+          <label for="skill-desc">Description</label>
+          <input type="text" id="skill-desc" placeholder="What this skill does and when to activate it" autocomplete="off">
+        </div>
+        <div class="form-group settings-form-group-last">
+          <label for="skill-content">Skill Instructions (Markdown)</label>
+          <textarea id="skill-content" rows="10" placeholder="# Skill: My Skill&#10;&#10;Instructions for the agent..."></textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="secondary-button" data-close="modal-create-skill">Cancel</button>
+        <button id="btn-save-skill" class="primary-button">Create Skill</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Create Memory Modal -->
+  <div id="modal-create-memory" class="modal-overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal-card" style="max-width:560px;">
+      <div class="modal-header">
+        <h3>New Memory</h3>
+        <button class="close-button" data-close="modal-create-memory">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="memory-name">Memory Name</label>
+          <input type="text" id="memory-name" placeholder="e.g. user-preferred-framework" autocomplete="off">
+          <span class="field-help">Short identifier for this memory.</span>
+        </div>
+        <div class="form-group">
+          <label for="memory-content">Content</label>
+          <textarea id="memory-content" rows="6" placeholder="What the agent should remember..."></textarea>
+        </div>
+        <div class="form-group">
+          <label for="memory-type">Type</label>
+          <select id="memory-type" class="settings-select" style="width:100%;padding:10px;border-radius:6px;background:var(--color-bg-card);color:var(--color-text-main);border:1px solid var(--color-border);">
+            <option value="fact">Fact</option>
+            <option value="preference">Preference</option>
+            <option value="identity">Identity</option>
+            <option value="project">Project</option>
+          </select>
+        </div>
+        <div class="form-group settings-form-group-last">
+          <label for="memory-scope">Scope</label>
+          <select id="memory-scope" class="settings-select" style="width:100%;padding:10px;border-radius:6px;background:var(--color-bg-card);color:var(--color-text-main);border:1px solid var(--color-border);">
+            <option value="global">Global (all chats)</option>
+            <option value="chat">Chat (this conversation)</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="secondary-button" data-close="modal-create-memory">Cancel</button>
+        <button id="btn-save-memory" class="primary-button">Save Memory</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Agent Skills Catalog Modal -->
+  <div id="modal-agenteskills" class="modal-overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal-card" style="max-width:600px;">
+      <div class="modal-header">
+        <h3>Agent Skills Catalog</h3>
+        <button class="close-button" data-close="modal-agenteskills">&times;</button>
+      </div>
+      <div class="model-picker-search-row" style="margin-top:12px;">
+        <svg class="model-picker-search-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+        <input type="text" id="agenteskills-search" class="model-picker-search" placeholder="Search agent skills..." autocomplete="off" />
+      </div>
+      <div id="agenteskills-tabs" class="model-picker-provider-selector" style="padding:8px 16px 0 16px;display:flex;gap:8px;">
+        <button class="provider-tab active" data-askill-tab="curated">Curated</button>
+        <button class="provider-tab" data-askill-tab="system">System</button>
+        <button class="provider-tab" data-askill-tab="experimental">Experimental</button>
+      </div>
+      <div id="agenteskills-list" class="model-picker-list">
+        <div class="model-picker-empty">Loading catalog...</div>
+      </div>
+      <div class="modal-footer" style="justify-content:space-between;">
+        <span id="agenteskills-status" class="settings-test-status"></span>
+        <span style="font-size:0.7rem;color:var(--color-text-muted);">Powered by <a href="https://github.com/openai/skills" target="_blank" rel="noopener" style="color:var(--color-accent);">openai/skills</a></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Import Skill Modal -->
+  <div id="modal-import-skill" class="modal-overlay hidden" role="dialog" aria-modal="true">
+    <div class="modal-card" style="max-width:480px;">
+      <div class="modal-header">
+        <h3>Import Skill</h3>
+        <button class="close-button" data-close="modal-import-skill">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group settings-form-group-last">
+          <label for="skill-import-url">Skill URL</label>
+          <input type="text" id="skill-import-url" placeholder="https://example.com/skills/my-skill/SKILL.md" autocomplete="off">
+          <span class="field-help">Paste a URL to a SKILL.md file or an opencode-style <code>index.json</code>.</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="secondary-button" data-close="modal-import-skill">Cancel</button>
+        <button id="btn-import-skill-confirm" class="primary-button">Import</button>
+      </div>
+    </div>
+  </div>
 
   <script src="bundle.js"></script>
 </body>

@@ -4,6 +4,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const { exec } = require('child_process');
 const fsSync = require('fs');
+const initSqlJs = require('sql.js');
 
 const app = express();
 app.use(cors());
@@ -12,85 +13,302 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Path to store config
 const CONFIG_FILE = path.join(__dirname, 'config.json');
-const DB_FILE = path.join(__dirname, 'database.json');
+const DB_FILE = path.join(__dirname, 'database.sqlite');
+const DB_LEGACY_FILE = path.join(__dirname, 'database.json');
 
-// Simple JSON Database for persistence (better for Termux/Android environments)
-class JSONDb {
+// ------------------------------------------------------------------
+// SQLite Database (sql.js — pure JS, no native compilation needed)
+// ------------------------------------------------------------------
+class SqliteDb {
   constructor(filePath) {
     this.filePath = filePath;
-    this.init();
+    this.db = null;
   }
 
-  init() {
-    if (!fsSync.existsSync(this.filePath)) {
-      const initialData = { chats: [], messages: [] };
-      fsSync.writeFileSync(this.filePath, JSON.stringify(initialData, null, 2), 'utf-8');
+  async init() {
+    const SQL = await initSqlJs();
+    
+    // Try to migrate legacy JSON data first
+    await this.migrateFromJson(SQL);
+
+    // Load or create SQLite database
+    if (fsSync.existsSync(this.filePath)) {
+      const buffer = fsSync.readFileSync(this.filePath);
+      this.db = new SQL.Database(buffer);
+    } else {
+      this.db = new SQL.Database();
     }
+
+    // Ensure schema exists
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS chats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )
+    `);
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id INTEGER NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        type TEXT DEFAULT 'text',
+        tool_call_id TEXT,
+        tool_calls TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+      )
+    `);
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS chat_skills (
+        chat_id INTEGER NOT NULL,
+        skill_name TEXT NOT NULL,
+        PRIMARY KEY (chat_id, skill_name),
+        FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+      )
+    `);
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS memories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id INTEGER,
+        name TEXT NOT NULL,
+        content TEXT NOT NULL,
+        scope TEXT DEFAULT 'global',
+        type TEXT DEFAULT 'fact',
+        tags TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+      )
+    `);
+    // Enable WAL mode for better concurrent reads
+    this.db.run('PRAGMA journal_mode=WAL');
+
+    this.save();
   }
 
-  read() {
+  async migrateFromJson(SQL) {
+    if (!fsSync.existsSync(DB_LEGACY_FILE)) return;
+    if (fsSync.existsSync(this.filePath)) return; // Already migrated
+
+    console.log('Migrating legacy JSON database to SQLite...');
     try {
-      const data = fsSync.readFileSync(this.filePath, 'utf-8');
-      return JSON.parse(data);
+      const jsonData = JSON.parse(fsSync.readFileSync(DB_LEGACY_FILE, 'utf-8'));
+      if (!jsonData.chats || jsonData.chats.length === 0) return;
+
+      this.db = new SQL.Database();
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS chats (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        )
+      `);
+      this.db.run(`
+        CREATE TABLE IF NOT EXISTS messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          chat_id INTEGER NOT NULL,
+          role TEXT NOT NULL,
+          content TEXT NOT NULL,
+          type TEXT DEFAULT 'text',
+          tool_call_id TEXT,
+          tool_calls TEXT,
+          created_at TEXT NOT NULL,
+          FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
+        )
+      `);
+
+      const insertChat = this.db.prepare('INSERT INTO chats (id, title, created_at) VALUES (?, ?, ?)');
+      const insertMsg = this.db.prepare('INSERT INTO messages (chat_id, role, content, type, tool_call_id, tool_calls, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)');
+
+      for (const chat of jsonData.chats) {
+        insertChat.run([chat.id, chat.title, chat.createdAt]);
+      }
+      for (const msg of jsonData.messages) {
+        insertMsg.run([
+          msg.chatId,
+          msg.role,
+          typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
+          msg.type || 'text',
+          msg.tool_call_id || null,
+          msg.tool_calls ? JSON.stringify(msg.tool_calls) : null,
+          msg.createdAt || new Date().toISOString()
+        ]);
+      }
+
+      this.save();
+      // Rename legacy file so it won't be migrated again
+      fsSync.renameSync(DB_LEGACY_FILE, DB_LEGACY_FILE + '.backup');
+      console.log(`Migration complete: ${jsonData.chats.length} chats, ${jsonData.messages.length} messages`);
     } catch (err) {
-      return { chats: [], messages: [] };
+      console.error('Migration failed (legacy file may be corrupt):', err.message);
+      this.db = new SQL.Database();
     }
   }
 
-  write(data) {
-    fsSync.writeFileSync(this.filePath, JSON.stringify(data, null, 2), 'utf-8');
+  save() {
+    const data = this.db.export();
+    const buffer = Buffer.from(data);
+    fsSync.writeFileSync(this.filePath, buffer);
   }
 
   getChats() {
-    return this.read().chats.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    const rows = this.db.exec('SELECT id, title, created_at FROM chats ORDER BY created_at DESC');
+    if (!rows.length) return [];
+    return rows[0].values.map(row => ({
+      id: row[0],
+      title: row[1],
+      createdAt: row[2]
+    }));
   }
 
   createChat(title) {
-    const data = this.read();
-    const newChat = {
-      id: data.chats.length > 0 ? Math.max(...data.chats.map(c => c.id)) + 1 : 1,
-      title: title || 'New Chat',
-      createdAt: new Date().toISOString()
-    };
-    data.chats.push(newChat);
-    this.write(data);
-    return newChat;
+    const createdAt = new Date().toISOString();
+    this.db.run('INSERT INTO chats (title, created_at) VALUES (?, ?)', [title || 'New Chat', createdAt]);
+    const id = this.db.exec('SELECT last_insert_rowid()')[0].values[0][0];
+    this.save();
+    return { id, title: title || 'New Chat', createdAt };
   }
 
   getChat(id) {
-    const data = this.read();
-    const chat = data.chats.find(c => c.id === parseInt(id));
-    if (!chat) return null;
-    const messages = data.messages.filter(m => m.chatId === parseInt(id));
-    return { ...chat, messages };
+    const rows = this.db.exec('SELECT id, title, created_at FROM chats WHERE id = ?', [id]);
+    if (!rows.length || !rows[0].values.length) return null;
+    const chat = rows[0].values[0];
+    const msgRows = this.db.exec(
+      'SELECT id, chat_id, role, content, type, tool_call_id, tool_calls, created_at FROM messages WHERE chat_id = ? ORDER BY id ASC',
+      [id]
+    );
+    const messages = msgRows.length ? msgRows[0].values.map(row => ({
+      id: row[0],
+      chatId: row[1],
+      role: row[2],
+      content: row[3],
+      type: row[4],
+      tool_call_id: row[5] || undefined,
+      tool_calls: row[6] ? JSON.parse(row[6]) : undefined,
+      createdAt: row[7]
+    })) : [];
+    return { id: chat[0], title: chat[1], createdAt: chat[2], messages };
   }
 
   deleteChat(id) {
-    const data = this.read();
-    data.chats = data.chats.filter(c => c.id !== parseInt(id));
-    data.messages = data.messages.filter(m => m.chatId !== parseInt(id));
-    this.write(data);
+    this.db.run('DELETE FROM messages WHERE chat_id = ?', [id]);
+    this.db.run('DELETE FROM chat_skills WHERE chat_id = ?', [id]);
+    this.db.run('DELETE FROM chats WHERE id = ?', [id]);
+    this.save();
   }
 
   saveMessage(chatId, role, content, type = 'text', toolCallId = null, toolCalls = null) {
-    const data = this.read();
-    const newMessage = {
-      id: data.messages.length > 0 ? Math.max(...data.messages.map(m => m.id)) + 1 : 1,
-      chatId: parseInt(chatId),
-      role,
-      content: typeof content === 'string' ? content : JSON.stringify(content),
-      type,
-      createdAt: new Date().toISOString()
-    };
-    if (toolCallId) newMessage.tool_call_id = toolCallId;
-    if (toolCalls) newMessage.tool_calls = toolCalls;
-    data.messages.push(newMessage);
-    this.write(data);
-    return newMessage;
+    const createdAt = new Date().toISOString();
+    const contentStr = typeof content === 'string' ? content : JSON.stringify(content);
+    const toolCallsStr = toolCalls ? JSON.stringify(toolCalls) : null;
+    this.db.run(
+      'INSERT INTO messages (chat_id, role, content, type, tool_call_id, tool_calls, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [chatId, role, contentStr, type, toolCallId, toolCallsStr, createdAt]
+    );
+    const id = this.db.exec('SELECT last_insert_rowid()')[0].values[0][0];
+    this.save();
+    return { id, chatId, role, content: contentStr, type, tool_call_id: toolCallId, tool_calls: toolCalls, createdAt };
+  }
+
+  getChatSkills(chatId) {
+    const rows = this.db.exec('SELECT skill_name FROM chat_skills WHERE chat_id = ?', [chatId]);
+    if (!rows.length) return [];
+    return rows[0].values.map(r => r[0]);
+  }
+
+  setChatSkill(chatId, skillName, active) {
+    if (active) {
+      this.db.run('INSERT OR IGNORE INTO chat_skills (chat_id, skill_name) VALUES (?, ?)', [chatId, skillName]);
+    } else {
+      this.db.run('DELETE FROM chat_skills WHERE chat_id = ? AND skill_name = ?', [chatId, skillName]);
+    }
+    this.save();
+  }
+
+  deleteChatSkills(chatId) {
+    this.db.run('DELETE FROM chat_skills WHERE chat_id = ?', [chatId]);
+    this.save();
+  }
+
+  // Memory CRUD
+  saveMemory(chatId, name, content, scope = 'global', type = 'fact', tags = '') {
+    const now = new Date().toISOString();
+    // Check if memory with same name+scope exists
+    const existing = this.db.exec(
+      'SELECT id FROM memories WHERE name = ? AND scope = ? AND (chat_id IS ? OR (chat_id IS NULL AND ? IS NULL))',
+      [name, scope, chatId, chatId]
+    );
+    if (existing.length && existing[0].values.length) {
+      const id = existing[0].values[0][0];
+      this.db.run(
+        'UPDATE memories SET content = ?, type = ?, tags = ?, updated_at = ? WHERE id = ?',
+        [content, type, tags, now, id]
+      );
+      this.save();
+      return { id, name, content, scope, type, tags, updatedAt: now };
+    }
+    this.db.run(
+      'INSERT INTO memories (chat_id, name, content, scope, type, tags, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [chatId, name, content, scope, type, tags, now, now]
+    );
+    const id = this.db.exec('SELECT last_insert_rowid()')[0].values[0][0];
+    this.save();
+    return { id, chatId, name, content, scope, type, tags, createdAt: now, updatedAt: now };
+  }
+
+  getMemories(scope = 'global', chatId = null) {
+    if (chatId) {
+      const rows = this.db.exec(
+        'SELECT id, chat_id, name, content, scope, type, tags, created_at, updated_at FROM memories WHERE scope = ? OR chat_id = ? ORDER BY updated_at DESC',
+        [scope, chatId]
+      );
+      if (!rows.length) return [];
+      return rows[0].values.map(r => ({
+        id: r[0], chatId: r[1], name: r[2], content: r[3],
+        scope: r[4], type: r[5], tags: r[6], createdAt: r[7], updatedAt: r[8]
+      }));
+    }
+    const rows = this.db.exec(
+      'SELECT id, chat_id, name, content, scope, type, tags, created_at, updated_at FROM memories WHERE scope = ? ORDER BY updated_at DESC',
+      [scope]
+    );
+    if (!rows.length) return [];
+    return rows[0].values.map(r => ({
+      id: r[0], chatId: r[1], name: r[2], content: r[3],
+      scope: r[4], type: r[5], tags: r[6], createdAt: r[7], updatedAt: r[8]
+    }));
+  }
+
+  searchMemories(query) {
+    const like = `%${query}%`;
+    const rows = this.db.exec(
+      'SELECT id, chat_id, name, content, scope, type, tags, created_at, updated_at FROM memories WHERE content LIKE ? OR name LIKE ? OR tags LIKE ? ORDER BY updated_at DESC LIMIT 20',
+      [like, like, like]
+    );
+    if (!rows.length) return [];
+    return rows[0].values.map(r => ({
+      id: r[0], chatId: r[1], name: r[2], content: r[3],
+      scope: r[4], type: r[5], tags: r[6], createdAt: r[7], updatedAt: r[8]
+    }));
+  }
+
+  deleteMemory(id) {
+    this.db.run('DELETE FROM memories WHERE id = ?', [id]);
+    this.save();
+  }
+
+  getGlobalMemoriesForInjection() {
+    const rows = this.db.exec(
+      "SELECT name, content, type FROM memories WHERE scope = 'global' ORDER BY updated_at DESC LIMIT 30"
+    );
+    if (!rows.length) return [];
+    return rows[0].values.map(r => ({ name: r[0], content: r[1], type: r[2] }));
   }
 }
 
-const db = new JSONDb(DB_FILE);
+const db = new SqliteDb(DB_FILE);
 
 // Default configurations
 const DEFAULT_CONFIG = {
@@ -99,7 +317,7 @@ const DEFAULT_CONFIG = {
   apiKey: '0',
   opencodeZenApiKey: '',
   model: 'qwen-plus',
-  systemPrompt: 'You are Claude Code Mobile, a powerful agentic AI coding assistant. You have access to local tools in the workspace: write_file, read_file, list_dir, run_command, git_clone, and (when the user has connected GitHub) github_list_repos, github_create_repo, github_push_files, github_get_user.\n\nUse these tools to help the user. Always explain what you are doing (e.g. "I am going to read the index.html file to inspect its content") right before invoking a tool. Make sure code changes are correct and tested.',
+  systemPrompt: 'You are *coder (mobile-ai-coder), a powerful agentic AI coding assistant optimized for mobile. You have access to local tools in the workspace: write_file, read_file, list_dir, run_command, git_clone, and (when the user has connected GitHub) github_list_repos, github_create_repo, github_push_files, github_get_user.\n\nUse these tools to help the user. Always explain what you are doing (e.g. "I am going to read the index.html file to inspect its content") right before invoking a tool. Make sure code changes are correct and tested.',
   workspacePath: path.join(__dirname, 'workspace'),
   githubToken: '',
   githubUser: null
@@ -151,6 +369,97 @@ function resolveWorkspacePath(workspacePath, relativePath) {
     throw new Error('Access denied: Path is outside the workspace directory');
   }
   return resolvedPath;
+}
+
+// ------------------------------------------------------------------
+// Skills System
+// ------------------------------------------------------------------
+const SKILLS_DIR = path.join(__dirname, '.mobile-ai-coder', 'skills');
+
+function parseSkillFrontmatter(content) {
+  const match = content.match(/^---\n([\s\S]*?)\n---\n([\s\S]*)$/);
+  if (!match) return null;
+  const frontmatter = {};
+  const lines = match[1].split('\n');
+  let currentKey = null;
+  let blockScalar = null; // '>' folded, '|' literal
+  let blockValue = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const sep = line.indexOf(':');
+    if (sep > 0 && (blockScalar === null || line.trim().length === 0 || line[0] !== ' ')) {
+      // Flush previous block scalar if any
+      if (currentKey && blockScalar !== null) {
+        let val = blockValue.join(blockScalar === '>' ? ' ' : '\n');
+        val = val.replace(/^\s+/gm, '').trim();
+        frontmatter[currentKey] = val;
+        blockValue = [];
+        blockScalar = null;
+      }
+      currentKey = line.slice(0, sep).trim();
+      let val = line.slice(sep + 1).trim();
+      if (val === '>' || val === '|') {
+        blockScalar = val;
+      } else {
+        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+          val = val.slice(1, -1);
+        }
+        frontmatter[currentKey] = val;
+        currentKey = null;
+      }
+    } else if (currentKey && blockScalar !== null) {
+      blockValue.push(line);
+    }
+  }
+  // Flush last block scalar
+  if (currentKey && blockScalar !== null) {
+    let val = blockValue.join(blockScalar === '>' ? ' ' : '\n');
+    val = val.replace(/^\s+/gm, '').trim();
+    frontmatter[currentKey] = val;
+  }
+  return { frontmatter, body: match[2].trim() };
+}
+
+async function discoverSkills() {
+  const skills = [];
+  try {
+    const entries = await fs.readdir(SKILLS_DIR, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const skillPath = path.join(SKILLS_DIR, entry.name, 'SKILL.md');
+      try {
+        const content = await fs.readFile(skillPath, 'utf-8');
+        const parsed = parseSkillFrontmatter(content);
+        if (!parsed || !parsed.frontmatter.name) {
+          console.log(`SKILL PARSE FAIL for ${entry.name}: no frontmatter/name`);
+          continue;
+        }
+        if (parsed.frontmatter.name.includes('"')) {
+          console.log(`SKILL QUOTE BUG for ${entry.name}: name=${JSON.stringify(parsed.frontmatter.name)}`);
+        }
+        skills.push({
+          name: parsed.frontmatter.name,
+          description: parsed.frontmatter.description || '',
+          content: parsed.body
+        });
+      } catch (_) {}
+    }
+  } catch (_) {
+    // skills dir doesn't exist yet
+  }
+  return skills;
+}
+
+const skillsCache = { skills: [], loaded: false };
+
+async function refreshSkills() {
+  skillsCache.skills = await discoverSkills();
+  skillsCache.loaded = true;
+  return skillsCache.skills;
+}
+
+function getCachedSkills() {
+  return skillsCache.skills;
 }
 
 // GitHub API helper — used both by tools and /api/github/* endpoints
@@ -388,6 +697,51 @@ const toolsDefinition = [
         required: ['repo', 'files']
       }
     }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'memory_save',
+      description: 'Save a persistent fact, preference, or observation that should be remembered across sessions.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Short identifier for this memory (e.g., "user-name", "project-framework")' },
+          content: { type: 'string', description: 'The information to remember.' },
+          scope: { type: 'string', enum: ['global', 'chat'], description: 'Global memories are shared across all chats. Chat memories are per-conversation.' },
+          type: { type: 'string', enum: ['fact', 'preference', 'identity', 'project'], description: 'Category of memory.' }
+        },
+        required: ['name', 'content']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'memory_search',
+      description: 'Search saved memories to recall facts, preferences, and past decisions.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Keywords to search for in memories.' }
+        },
+        required: ['query']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'skill_read',
+      description: 'Load the full instructions for an active skill. Call this when you decide to use a skill listed in Active Skills.',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'The skill name to load.' }
+        },
+        required: ['name']
+      }
+    }
   }
 ];
 
@@ -425,6 +779,236 @@ app.get('/api/chats/:id', (req, res) => {
 app.delete('/api/chats/:id', (req, res) => {
   try {
     db.deleteChat(req.params.id);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Skills Endpoints
+app.get('/api/skills', async (req, res) => {
+  try {
+    if (!skillsCache.loaded) await refreshSkills();
+    res.json({ skills: getCachedSkills() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/chats/:id/skills', (req, res) => {
+  try {
+    const active = db.getChatSkills(parseInt(req.params.id));
+    res.json({ active });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/chats/:id/skills', (req, res) => {
+  try {
+    const chatId = parseInt(req.params.id);
+    const { name, active } = req.body;
+    if (!name) return res.status(400).json({ error: 'Missing skill name' });
+    db.setChatSkill(chatId, name, active);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Create a new skill manually
+app.post('/api/skills', async (req, res) => {
+  try {
+    const { name, description, content } = req.body;
+    if (!name || !content) return res.status(400).json({ error: 'Name and content are required' });
+    const safeName = name.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+    const skillDir = path.join(SKILLS_DIR, safeName);
+    const skillFile = path.join(skillDir, 'SKILL.md');
+    const frontmatter = `---\nname: ${safeName}\ndescription: ${description || ''}\n---\n\n`;
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(skillFile, frontmatter + content, 'utf-8');
+    await refreshSkills();
+    res.json({ success: true, skill: { name: safeName, description: description || '', content } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Import skill from URL
+app.post('/api/skills/import', async (req, res) => {
+  try {
+    const { url } = req.body;
+    if (!url) return res.status(400).json({ error: 'URL is required' });
+
+    // Try fetching the URL — could be a direct SKILL.md or an index.json
+    const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    if (!response.ok) throw new Error(`Failed to fetch URL: ${response.status}`);
+    const text = await response.text();
+
+    // Determine if it's a JSON index or a markdown skill file
+    let imported = [];
+    if (url.endsWith('.json') || text.trim().startsWith('{')) {
+      // Treat as index.json (opencode format: { skills: [{ name, files: [] }] })
+      let index;
+      try { index = JSON.parse(text); } catch (_) { throw new Error('Invalid JSON index at URL'); }
+      const skillsList = index.skills || [];
+      for (const skill of skillsList) {
+        if (!skill.name || !skill.files) continue;
+        // Try to fetch SKILL.md from the first .md file in files, or from the base URL
+        const mdFile = skill.files.find(f => f.endsWith('.md') || f.endsWith('SKILL.md')) || (skill.files[0] + '/SKILL.md');
+        const mdUrl = new URL(mdFile, url).href;
+        try {
+          const mdRes = await fetch(mdUrl, { signal: AbortSignal.timeout(5000) });
+          if (!mdRes.ok) continue;
+          const mdContent = await mdRes.text();
+          const parsed = parseSkillFrontmatter(mdContent);
+          if (!parsed || !parsed.frontmatter.name) continue;
+          const safeName = parsed.frontmatter.name.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+          const skillDir = path.join(SKILLS_DIR, safeName);
+          await fs.mkdir(skillDir, { recursive: true });
+          await fs.writeFile(path.join(skillDir, 'SKILL.md'), mdContent, 'utf-8');
+          imported.push({ name: safeName, description: parsed.frontmatter.description || '' });
+        } catch (_) { continue; }
+      }
+    } else {
+      // Treat as direct SKILL.md
+      const parsed = parseSkillFrontmatter(text);
+      if (!parsed || !parsed.frontmatter.name) throw new Error('Invalid skill file: missing name in frontmatter');
+      const safeName = parsed.frontmatter.name.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+      const skillDir = path.join(SKILLS_DIR, safeName);
+      await fs.mkdir(skillDir, { recursive: true });
+      await fs.writeFile(path.join(skillDir, 'SKILL.md'), text, 'utf-8');
+      imported.push({ name: safeName, description: parsed.frontmatter.description || '' });
+    }
+
+    await refreshSkills();
+    res.json({ success: true, imported });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete a skill
+app.delete('/api/skills/:name', async (req, res) => {
+  try {
+    const safeName = req.params.name.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+    const skillDir = path.join(SKILLS_DIR, safeName);
+    await fs.rm(skillDir, { recursive: true, force: true });
+    await refreshSkills();
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Agent Skills Catalog — live from GitHub API
+const SKILLS_CATALOG_CACHE = { data: null, timestamp: 0, ttl: 5 * 60 * 1000 };
+
+async function fetchSkillsCatalog() {
+  const now = Date.now();
+  if (SKILLS_CATALOG_CACHE.data && (now - SKILLS_CATALOG_CACHE.timestamp) < SKILLS_CATALOG_CACHE.ttl) {
+    return SKILLS_CATALOG_CACHE.data;
+  }
+  const categories = ['curated', 'system', 'experimental'];
+  const result = {};
+  for (const cat of categories) {
+    try {
+      const res = await fetch(
+        `https://api.github.com/repos/openai/skills/contents/skills/.${cat}`,
+        { headers: { 'Accept': 'application/vnd.github.v3+json' }, signal: AbortSignal.timeout(10000) }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        result[cat] = data.filter(item => item.type === 'dir').map(item => item.name);
+      } else {
+        result[cat] = [];
+      }
+    } catch (e) {
+      console.error(`Failed to fetch ${cat} skills:`, e.message);
+      result[cat] = [];
+    }
+  }
+
+  SKILLS_CATALOG_CACHE.data = result;
+  SKILLS_CATALOG_CACHE.timestamp = now;
+  return result;
+}
+
+app.get('/api/skills/catalog', async (req, res) => {
+  try {
+    const catalog = await fetchSkillsCatalog();
+    res.json(catalog);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/skills/import-from-catalog', async (req, res) => {
+  try {
+    const { name, category } = req.body;
+    if (!name || !category) return res.status(400).json({ error: 'Skill name and category are required' });
+
+    const catalog = await fetchSkillsCatalog();
+    if (!catalog[category] || !catalog[category].includes(name)) {
+      return res.status(400).json({ error: `Skill "${name}" not found in ${category} catalog` });
+    }
+
+    const url = `https://raw.githubusercontent.com/openai/skills/main/skills/.${category}/${name}/SKILL.md`;
+    const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    if (!response.ok) throw new Error(`Failed to fetch skill: HTTP ${response.status}`);
+    const mdContent = await response.text();
+
+    // Parse existing frontmatter or create new one
+    let safeName = name.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+    let description = `Agent skill from openai/skills .${category}`;
+    let body = mdContent;
+
+    const parsed = parseSkillFrontmatter(mdContent);
+    if (parsed) {
+      description = parsed.frontmatter.description || description;
+      body = mdContent;
+    } else {
+      const frontmatter = `---\nname: ${safeName}\ndescription: ${description}\n---\n\n`;
+      body = frontmatter + mdContent;
+    }
+
+    const skillDir = path.join(SKILLS_DIR, safeName);
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(path.join(skillDir, 'SKILL.md'), body, 'utf-8');
+    await refreshSkills();
+
+    res.json({ success: true, skill: { name: safeName, description, content: body } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Memory Endpoints
+app.get('/api/memories', (req, res) => {
+  try {
+    const scope = req.query.scope || 'global';
+    const chatId = req.query.chatId ? parseInt(req.query.chatId) : null;
+    const memories = db.getMemories(scope, chatId);
+    res.json({ memories });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/memories', (req, res) => {
+  try {
+    const { name, content, scope, type, tags, chatId } = req.body;
+    if (!name || !content) return res.status(400).json({ error: 'Name and content are required' });
+    const memory = db.saveMemory(chatId || null, name, content, scope || 'global', type || 'fact', tags || '');
+    res.json({ success: true, memory });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/memories/:id', (req, res) => {
+  try {
+    db.deleteMemory(parseInt(req.params.id));
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -774,7 +1358,9 @@ async function runAgentExecution(chatId, clientMessages) {
     clients: new Set(),
     done: false,
     error: null,
-    promise: null
+    promise: null,
+    abortController: null,
+    cancelled: false
   };
   activeExecutions.set(chatId, execution);
 
@@ -810,9 +1396,52 @@ async function runAgentExecution(chatId, clientMessages) {
     }
   }
 
-  // Compile active messages history with system prompt
+  // Compile memories for injection
+  const globalMemories = db.getGlobalMemoriesForInjection();
+  let memoriesBlock = '';
+  if (globalMemories.length > 0) {
+    memoriesBlock = '\n\n---\n### Persistent Memories\n' +
+      globalMemories.map(m =>
+        `<memory name="${m.name}" type="${m.type}">\n${m.content}\n</memory>`
+      ).join('\n\n') +
+      '\n---';
+  }
+
+  // Compile active messages history with system prompt + active skills
+  // Uses full injection for skills that fit in budget, progressive disclosure for overflow
+  const activeSkillNames = chatId ? db.getChatSkills(chatId) : [];
+  let skillsBlock = '';
+  let skillReadCache = {};
+  if (activeSkillNames.length > 0 && skillsCache.loaded) {
+    const allSkills = getCachedSkills();
+    const activeSkills = allSkills.filter(s => activeSkillNames.includes(s.name));
+    if (activeSkills.length > 0) {
+      const SKILLS_BUDGET = 8000;
+      let block = '';
+      let progressiveSkills = [];
+      for (const s of activeSkills) {
+        const fullEntry = `<skill name="${s.name}">\n${s.content}\n</skill>\n`;
+        const progEntry = `<skill name="${s.name}" description="${s.description}">\n`;
+        if (block.length + fullEntry.length <= SKILLS_BUDGET) {
+          block += fullEntry;
+        } else if (block.length + progEntry.length <= SKILLS_BUDGET) {
+          block += progEntry;
+          progressiveSkills.push(s.name);
+        } else {
+          break;
+        }
+      }
+      if (block) {
+        let hint = '';
+        if (progressiveSkills.length > 0) {
+          hint = '\nUse skill_read("skill-name") to load full instructions for skills marked with description only.';
+        }
+        skillsBlock = '\n\n---\n### Active Skills\n' + block.trimEnd() + hint + '\n---';
+      }
+    }
+  }
   let messages = [
-    { role: 'system', content: config.systemPrompt },
+    { role: 'system', content: config.systemPrompt + memoriesBlock + skillsBlock },
     ...clientMessages
   ];
 
@@ -822,29 +1451,42 @@ async function runAgentExecution(chatId, clientMessages) {
     let currentIteration = 0;
 
     try {
-      while (currentIteration < loopLimit) {
+      while (currentIteration < loopLimit && !execution.cancelled) {
         currentIteration++;
+
         broadcastEvent('status', { content: 'Thinking...' });
 
         // Call LLM API (OpenAI specification) with stream: true
         const controller = new AbortController();
+        execution.abortController = controller;
 
         const conn = getActiveConnectionInfo(config);
-        const apiResponse = await fetch(`${conn.apiUrl}/chat/completions`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${conn.apiKey}`
-          },
-          body: JSON.stringify({
-            model: config.model,
-            messages: cleanMessagesForApi(messages),
-            tools: toolsDefinition,
-            tool_choice: 'auto',
-            stream: true
-          }),
-          signal: controller.signal
-        });
+
+        // Guard: cancelled right before fetch
+        if (execution.cancelled) break;
+
+        let apiResponse;
+        try {
+          apiResponse = await fetch(`${conn.apiUrl}/chat/completions`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${conn.apiKey}`
+            },
+            body: JSON.stringify({
+              model: config.model,
+              messages: cleanMessagesForApi(messages),
+              tools: toolsDefinition,
+              tool_choice: 'auto',
+              stream: true
+            }),
+            signal: controller.signal
+          });
+        } catch (fetchErr) {
+          // AbortError from cancellation — exit silently
+          if (fetchErr.name === 'AbortError') break;
+          throw fetchErr;
+        }
 
         if (!apiResponse.ok) {
           const errorText = await apiResponse.text();
@@ -861,100 +1503,117 @@ async function runAgentExecution(chatId, clientMessages) {
         const decoder = new TextDecoder();
         let streamBuffer = '';
 
-        for await (const chunk of reader) {
-          streamBuffer += decoder.decode(chunk, { stream: true });
-          const lines = streamBuffer.split('\n');
-          streamBuffer = lines.pop(); // Keep partial line
+        try {
+          for await (const chunk of reader) {
+            // Check cancellation during stream processing
+            if (execution.cancelled) {
+              controller.abort();
+              break;
+            }
 
-          for (const line of lines) {
-            const cleanedLine = line.trim();
-            if (!cleanedLine) continue;
-            if (cleanedLine === 'data: [DONE]') continue;
-            
-            if (cleanedLine.startsWith('data: ')) {
-              const dataStr = cleanedLine.slice(6);
-              try {
-                const data = JSON.parse(dataStr);
-                const choice = data.choices?.[0];
-                if (!choice) continue;
+            streamBuffer += decoder.decode(chunk, { stream: true });
+            const lines = streamBuffer.split('\n');
+            streamBuffer = lines.pop(); // Keep partial line
 
-                const delta = choice.delta;
+            for (const line of lines) {
+              const cleanedLine = line.trim();
+              if (!cleanedLine) continue;
+              if (cleanedLine === 'data: [DONE]') continue;
+              
+              if (cleanedLine.startsWith('data: ')) {
+                const dataStr = cleanedLine.slice(6);
+                try {
+                  const data = JSON.parse(dataStr);
+                  const choice = data.choices?.[0];
+                  if (!choice) continue;
 
-                // 1. Handle native reasoning content
-                if (delta.reasoning_content) {
-                  assistantReasoning += delta.reasoning_content;
-                  broadcastEvent('reasoning', { content: delta.reasoning_content });
-                }
+                  const delta = choice.delta;
 
-                // 2. Handle streamed content (with potential inline <think> tags)
-                if (delta.content) {
-                  let textChunk = delta.content;
-
-                  // Match inline <think> or <thought>
-                  if (textChunk.includes('<think>') || textChunk.includes('<thought>')) {
-                    isThinkingInline = true;
-                    const tag = textChunk.includes('<think>') ? '<think>' : '<thought>';
-                    const parts = textChunk.split(tag);
-                    if (parts[0]) {
-                      assistantContent += parts[0];
-                      broadcastEvent('text', { content: parts[0] });
-                    }
-                    if (parts[1]) {
-                      assistantReasoning += parts[1];
-                      broadcastEvent('reasoning', { content: parts[1] });
-                    }
-                    continue;
+                  // 1. Handle native reasoning content
+                  if (delta.reasoning_content) {
+                    assistantReasoning += delta.reasoning_content;
+                    broadcastEvent('reasoning', { content: delta.reasoning_content });
                   }
 
-                  // Match inline </think> or </thought>
-                  if (textChunk.includes('</think>') || textChunk.includes('</thought>')) {
-                    isThinkingInline = false;
-                    const tag = textChunk.includes('</think>') ? '</think>' : '</thought>';
-                    const parts = textChunk.split(tag);
-                    if (parts[0]) {
-                      assistantReasoning += parts[0];
-                      broadcastEvent('reasoning', { content: parts[0] });
-                    }
-                    if (parts[1]) {
-                      assistantContent += parts[1];
-                      broadcastEvent('text', { content: parts[1] });
-                    }
-                    continue;
-                  }
+                  // 2. Handle streamed content (with potential inline <think> tags)
+                  if (delta.content) {
+                    let textChunk = delta.content;
 
-                  if (isThinkingInline) {
-                    assistantReasoning += textChunk;
-                    broadcastEvent('reasoning', { content: textChunk });
-                  } else {
-                    assistantContent += textChunk;
-                    broadcastEvent('text', { content: textChunk });
-                  }
-                }
+                    // Match inline <think> or <thought>
+                    if (textChunk.includes('<think>') || textChunk.includes('<thought>')) {
+                      isThinkingInline = true;
+                      const tag = textChunk.includes('<think>') ? '<think>' : '<thought>';
+                      const parts = textChunk.split(tag);
+                      if (parts[0]) {
+                        assistantContent += parts[0];
+                        broadcastEvent('text', { content: parts[0] });
+                      }
+                      if (parts[1]) {
+                        assistantReasoning += parts[1];
+                        broadcastEvent('reasoning', { content: parts[1] });
+                      }
+                      continue;
+                    }
 
-                // 3. Accumulate tool calls chunks
-                if (delta.tool_calls) {
-                  for (const tc of delta.tool_calls) {
-                    const idx = tc.index;
-                    if (!accumulatedToolCalls[idx]) {
-                      accumulatedToolCalls[idx] = {
-                        id: tc.id || '',
-                        name: tc.function?.name || '',
-                        arguments: tc.function?.arguments || ''
-                      };
+                    // Match inline </think> or </thought>
+                    if (textChunk.includes('</think>') || textChunk.includes('</thought>')) {
+                      isThinkingInline = false;
+                      const tag = textChunk.includes('</think>') ? '</think>' : '</thought>';
+                      const parts = textChunk.split(tag);
+                      if (parts[0]) {
+                        assistantReasoning += parts[0];
+                        broadcastEvent('reasoning', { content: parts[0] });
+                      }
+                      if (parts[1]) {
+                        assistantContent += parts[1];
+                        broadcastEvent('text', { content: parts[1] });
+                      }
+                      continue;
+                    }
+
+                    if (isThinkingInline) {
+                      assistantReasoning += textChunk;
+                      broadcastEvent('reasoning', { content: textChunk });
                     } else {
-                      if (tc.id) accumulatedToolCalls[idx].id = tc.id;
-                      if (tc.function?.name) accumulatedToolCalls[idx].name = tc.function.name;
-                      if (tc.function?.arguments) accumulatedToolCalls[idx].arguments += tc.function.arguments;
+                      assistantContent += textChunk;
+                      broadcastEvent('text', { content: textChunk });
                     }
                   }
-                }
 
-              } catch (err) {
-                console.error("Error parsing LLM stream chunk:", line, err);
+                  // 3. Accumulate tool calls chunks
+                  if (delta.tool_calls) {
+                    for (const tc of delta.tool_calls) {
+                      const idx = tc.index;
+                      if (!accumulatedToolCalls[idx]) {
+                        accumulatedToolCalls[idx] = {
+                          id: tc.id || '',
+                          name: tc.function?.name || '',
+                          arguments: tc.function?.arguments || ''
+                        };
+                      } else {
+                        if (tc.id) accumulatedToolCalls[idx].id = tc.id;
+                        if (tc.function?.name) accumulatedToolCalls[idx].name = tc.function.name;
+                        if (tc.function?.arguments) accumulatedToolCalls[idx].arguments += tc.function.arguments;
+                      }
+                    }
+                  }
+
+                } catch (err) {
+                  console.error("Error parsing LLM stream chunk:", line, err);
+                }
               }
             }
           }
+        } catch (streamErr) {
+          if (streamErr.name === 'AbortError' || execution.cancelled) {
+            // Stream aborted due to cancellation
+            break;
+          }
+          throw streamErr;
         }
+
+        // If cancelled during stream, exit loop
+        if (execution.cancelled) break;
 
         // Stream response finished successfully
         const toolCalls = accumulatedToolCalls.filter(x => x !== undefined);
@@ -983,9 +1642,12 @@ async function runAgentExecution(chatId, clientMessages) {
           // We push assistant message (including the tool calls) to history
           messages.push(assistantMessage);
 
+          if (execution.cancelled) break;
+
           broadcastEvent('status', { content: 'Analyzing tools...' });
 
           for (const toolCall of toolCalls) {
+            if (execution.cancelled) break;
             const { name, id } = toolCall;
             let args = {};
             try {
@@ -1098,43 +1760,93 @@ async function runAgentExecution(chatId, clientMessages) {
                   if (!owner) {
                     throw new Error('Could not determine repository owner. Connect GitHub first or pass owner explicitly.');
                   }
-                  // Resolve default branch if not provided
                   let branch = args.branch;
-                  if (!branch) {
-                    const repoInfo = await githubRequest(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
-                    branch = repoInfo.default_branch;
-                  }
+                  const repoInfo = await githubRequest(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
+                  branch = branch || repoInfo.default_branch;
                   const files = Array.isArray(args.files) ? args.files : [];
                   if (files.length === 0) {
                     throw new Error('No files provided to github_push_files.');
                   }
-                  const commitMessage = args.commit_message || `Update ${files.length} file(s) via mobile-code-agent`;
-                  const results = [];
-                  for (const file of files) {
-                    let sha;
+                  const commitMessage = args.commit_message || `Update ${files.length} file(s) via mobile-ai-coder`;
+
+                  // Get the latest commit SHA for the branch
+                  const refData = await githubRequest(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/refs/heads/${encodeURIComponent(branch)}`);
+                  const latestCommitSha = refData.object.sha;
+
+                  // Get the tree SHA from the latest commit
+                  const commitData = await githubRequest(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/commits/${latestCommitSha}`);
+                  const baseTreeSha = commitData.tree.sha;
+
+                  // Build tree entries for all files
+                  const treeEntries = await Promise.all(files.map(async (file) => {
+                    let existingSha = null;
                     try {
                       const existing = await githubRequest(
                         `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodeURIComponent(file.path)}?ref=${encodeURIComponent(branch)}`
                       );
-                      if (existing && existing.sha) sha = existing.sha;
+                      if (existing && existing.sha) existingSha = existing.sha;
                     } catch (_) {}
-                    const body = {
-                      message: commitMessage,
-                      branch,
-                      content: Buffer.from(String(file.content), 'utf-8').toString('base64')
-                    };
-                    if (sha) body.sha = sha;
-                    const result = await githubRequest(
-                      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodeURIComponent(file.path)}`,
-                      { method: 'PUT', body }
-                    );
-                    results.push({
+                    return {
                       path: file.path,
-                      commit_sha: result.commit && result.commit.sha,
-                      content_url: result.content && result.content.html_url
-                    });
+                      mode: '100644',
+                      type: 'blob',
+                      sha: existingSha || undefined,
+                      content: existingSha ? undefined : String(file.content)
+                    };
+                  }));
+
+                  // Create a new tree with all files
+                  const newTree = await githubRequest(
+                    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees`,
+                    { method: 'POST', body: { base_tree: baseTreeSha, tree: treeEntries } }
+                  );
+
+                  // Create a commit pointing to the new tree
+                  const newCommit = await githubRequest(
+                    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/commits`,
+                    { method: 'POST', body: { message: commitMessage, tree: newTree.sha, parents: [latestCommitSha] } }
+                  );
+
+                  // Update the branch reference
+                  await githubRequest(
+                    `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/refs/heads/${encodeURIComponent(branch)}`,
+                    { method: 'PATCH', body: { sha: newCommit.sha, force: false } }
+                  );
+
+                  const results = files.map(f => ({ path: f.path }));
+                  toolOutput = JSON.stringify({ owner, repo, branch, commit: newCommit.sha, count: results.length, files: results });
+                  break;
+                }
+                case 'memory_save': {
+                  const mem = db.saveMemory(
+                    chatId,
+                    args.name || 'unnamed',
+                    args.content || '',
+                    args.scope || 'global',
+                    args.type || 'fact',
+                    args.tags || ''
+                  );
+                  toolOutput = JSON.stringify({ success: true, memory: mem });
+                  break;
+                }
+                case 'memory_search': {
+                  const results = db.searchMemories(args.query || '');
+                  if (results.length === 0) {
+                    toolOutput = JSON.stringify({ success: true, results: [], message: 'No memories found matching the query.' });
+                  } else {
+                    toolOutput = JSON.stringify({ success: true, results });
                   }
-                  toolOutput = JSON.stringify({ owner, repo, branch, count: results.length, files: results });
+                  break;
+                }
+                case 'skill_read': {
+                  const allLoadedSkills = getCachedSkills();
+                  const skill = allLoadedSkills.find(s => s.name === args.name);
+                  if (!skill) {
+                    toolOutput = JSON.stringify({ error: `Skill "${args.name}" not found. Available: ${allLoadedSkills.map(s => s.name).join(', ')}` });
+                  } else {
+                    toolOutput = `--- Full instructions for "${skill.name}" ---\n${skill.content}\n--- End of "${skill.name}" instructions ---`;
+                    skillReadCache[skill.name] = true;
+                  }
                   break;
                 }
                 default:
@@ -1154,6 +1866,17 @@ async function runAgentExecution(chatId, clientMessages) {
               name: name,
               content: toolOutput
             });
+
+            // If skill_read was called, persist full instructions as system message for future turns
+            if (name === 'skill_read' && !toolOutput.startsWith('{"error"')) {
+              const contentMatch = toolOutput.match(/--- Full instructions for "(.+?)" ---\n([\s\S]*?)\n--- End of /);
+              if (contentMatch) {
+                messages.push({
+                  role: 'system',
+                  content: `<skill name="${contentMatch[1]}">\n${contentMatch[2]}\n</skill>`
+                });
+              }
+            }
 
             // Persist tool call and output
             saveMessage('assistant', `Call tool: ${name} with args ${JSON.stringify(args)}`, 'tool_call', null, [{
@@ -1176,13 +1899,20 @@ async function runAgentExecution(chatId, clientMessages) {
 
       broadcastEvent('done', { chatId });
       // Persist final assistant message
-      const finalAssistant = messages[messages.length - 1];
-      if (finalAssistant && finalAssistant.role === 'assistant' && !finalAssistant.tool_calls) {
-        saveMessage('assistant', finalAssistant.content);
+      if (!execution.cancelled) {
+        const finalAssistant = messages[messages.length - 1];
+        if (finalAssistant && finalAssistant.role === 'assistant' && !finalAssistant.tool_calls) {
+          saveMessage('assistant', finalAssistant.content);
+        }
       }
     } catch (err) {
-      console.error("Agent execution error:", err);
-      broadcastEvent('error', { content: err.message });
+      // AbortError from cancellation — exit silently
+      if (err.name === 'AbortError' || execution.cancelled) {
+        broadcastEvent('done', { chatId });
+      } else {
+        console.error("Agent execution error:", err);
+        broadcastEvent('error', { content: err.message });
+      }
     } finally {
       execution.done = true;
       for (const res of execution.clients) {
@@ -1206,6 +1936,29 @@ app.get('/api/chat/status', (req, res) => {
     if (!chatId) return res.status(400).json({ error: 'Missing chatId' });
     const execution = activeExecutions.get(chatId);
     res.json({ running: !!execution, chatId });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Cancel active agent execution
+app.post('/api/chat/cancel', (req, res) => {
+  try {
+    const chatId = parseInt(req.body.chatId);
+    if (!chatId) return res.status(400).json({ error: 'Missing chatId' });
+    const execution = activeExecutions.get(chatId);
+    if (!execution) return res.json({ cancelled: false, reason: 'No active execution' });
+    execution.cancelled = true;
+    if (execution.abortController) {
+      execution.abortController.abort();
+    }
+    // Notify all SSE clients of cancellation
+    for (const client of execution.clients) {
+      try {
+        client.write(`data: ${JSON.stringify({ type: 'cancelled', chatId })}\n\n`);
+      } catch (_) {}
+    }
+    res.json({ cancelled: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1279,10 +2032,19 @@ app.post('/api/chat', async (req, res) => {
 
 // Port configuration
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, async () => {
+
+async function start() {
+  await db.init();
   const config = await getConfig();
-  console.log(`===================================================`);
-  console.log(`Mobile Code Agent listening on http://localhost:${PORT}`);
-  console.log(`Workspace folder is: ${config.workspacePath}`);
-  console.log(`===================================================`);
+  app.listen(PORT, () => {
+    console.log(`===================================================`);
+    console.log(`Mobile Code Agent listening on http://localhost:${PORT}`);
+    console.log(`Workspace folder is: ${config.workspacePath}`);
+    console.log(`===================================================`);
+  });
+}
+
+start().catch(err => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
 });
